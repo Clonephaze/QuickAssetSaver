@@ -7,12 +7,10 @@ Includes helpers for file I/O, catalog parsing, metadata assignment, and sanitiz
 
 import bpy
 from bpy.types import Operator
-from bpy.props import StringProperty, EnumProperty
-import os
+from bpy.props import EnumProperty
 import re
 import uuid
 from pathlib import Path
-import tempfile
 import shutil
 
 
@@ -20,6 +18,7 @@ def sanitize_name(name, max_length=128):
     """
     Sanitize a filename to be cross-platform compatible.
     Removes or replaces invalid filesystem characters for Windows/macOS/Linux.
+    Replaces spaces with underscores for cleaner filenames.
     
     Args:
         name (str): The original filename
@@ -30,9 +29,11 @@ def sanitize_name(name, max_length=128):
     
     Examples:
         >>> sanitize_name("My Asset/Test*")
-        'My Asset_Test_'
+        'My_Asset_Test_'
         >>> sanitize_name("Material:Wood|Pine")
         'Material_Wood_Pine'
+        >>> sanitize_name("My Material Name")
+        'My_Material_Name'
         >>> sanitize_name("x" * 200)[:128] == "x" * 128
         True
     """
@@ -42,8 +43,11 @@ def sanitize_name(name, max_length=128):
     invalid_chars = r'[<>:"/\\|?*\x00-\x1f]'
     sanitized = re.sub(invalid_chars, '_', name)
     
-    # Remove leading/trailing dots and spaces (problematic on Windows)
-    sanitized = sanitized.strip('. ')
+    # Replace spaces with underscores for cleaner filenames
+    sanitized = sanitized.replace(' ', '_')
+    
+    # Remove leading/trailing dots and underscores (problematic on Windows)
+    sanitized = sanitized.strip('._')
     
     # Ensure not empty
     if not sanitized:
@@ -341,7 +345,12 @@ class QAS_OT_save_asset_to_library(Operator):
             self.report({'ERROR'}, f"Library path does not exist: {library_path}")
             return {'CANCELLED'}
         
-        if not os.access(library_path, os.W_OK):
+        # Test write permissions using pathlib (cross-platform)
+        try:
+            test_file = library_path / ".write_test"
+            test_file.touch()
+            test_file.unlink()
+        except (OSError, PermissionError):
             self.report({'ERROR'}, f"Library path is not writable: {library_path}")
             return {'CANCELLED'}
         

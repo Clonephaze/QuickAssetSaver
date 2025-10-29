@@ -8,15 +8,13 @@ Handles user settings like library path, default author, and options.
 import bpy
 from bpy.types import AddonPreferences, PropertyGroup
 from bpy.props import StringProperty, BoolProperty, EnumProperty
-import os
 from pathlib import Path
 
 
 def get_default_library_path():
     """
-    Auto-detect or create a default asset library path.
-    Tries to find Blender's User Library, otherwise creates 'Easy Add Assets'
-    in the user's home directory.
+    Auto-detect or create a default asset library path using Blender's API.
+    Cross-platform compatible using bpy.utils.user_resource().
     
     Returns:
         str: Path to the default library folder
@@ -25,23 +23,22 @@ def get_default_library_path():
     prefs = bpy.context.preferences
     if hasattr(prefs, 'filepaths') and hasattr(prefs.filepaths, 'asset_libraries'):
         # Check if any user libraries are defined
-        for lib in prefs.filepaths.asset_libraries:
-            if lib.path:
-                return lib.path
+        asset_libs = prefs.filepaths.asset_libraries
+        if asset_libs and len(asset_libs) > 0:
+            first_lib = asset_libs[0]
+            if hasattr(first_lib, 'path') and first_lib.path:
+                return first_lib.path
     
-    # Fallback: create 'Easy Add Assets' in user home
-    home = Path.home()
-    default_path = home / "Easy Add Assets"
+    # Fallback: Use Blender's user resource directory (cross-platform)
+    # This respects Blender's configured user paths and works on all OS
+    default_path = bpy.utils.user_resource('DATAFILES', path='assets', create=True)
     
-    # Create the directory if it doesn't exist
-    if not default_path.exists():
-        try:
-            default_path.mkdir(parents=True, exist_ok=True)
-            print(f"Created default asset library folder at: {default_path}")
-        except Exception as e:
-            print(f"Could not create default library folder: {e}")
+    if default_path:
+        print(f"Using Blender user resource path for assets: {default_path}")
+        return default_path
     
-    return str(default_path)
+    # Last resort fallback (should rarely happen)
+    return str(Path.home() / "BlenderAssets")
 
 
 class QuickAssetSaverPreferences(AddonPreferences):
