@@ -5,4 +5,11 @@ name = "Quick Asset Saver"
 tagline = "A quick way to save assets directly to your user asset library, without the need to manually copy your .blend files."
 maintainer = "Clonephaze"
 type = "add-on"
-website = "
+website = "https://github.com/Clonephaze/QuickAssetSaver/issues"
+tags = ["User Interface", "System"]
+blender_version_min = "5.0.0"
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+[permissions]
+files = "For reading user library paths and writing asset files."

@@ -1,40 +1,17 @@
-"""
-Quick Asset Saver - Blender Addon
-==================================
-Enables saving assets from the Current File Asset Browser directly to a user 
-asset library folder as individual .blend files with full metadata support.
-
-Author: Quick Asset Saver Team
-License: GPL
-"""
-
-bl_info = {
-    "name": "Quick Asset Saver",
-    "author": "Quick Asset Saver Team",
-    "version": (1, 0, 0),
-    "blender": (5, 0, 0),
-    "location": "Asset Browser > Context Menu > Save to Library",
-    "description": "Save Current File assets directly to a library folder as individual .blend files",
-    "category": "Asset Management",
-    "doc_url": "",
-    "tracker_url": "",
-}
-
-# Import submodules
 if "bpy" in locals():
     import importlib
     if "operators" in locals():
-        importlib.reload(operators)
+        importlib.reload(operators)  # noqa: F821
     if "properties" in locals():
-        importlib.reload(properties)
+        importlib.reload(properties)  # noqa: F821
     if "panels" in locals():
-        importlib.reload(panels)
+        importlib.reload(panels)  # noqa: F821
 else:
     from . import operators
     from . import properties
     from . import panels
 
-import bpy
+import bpy  # noqa: F401
 
 
 def register():
