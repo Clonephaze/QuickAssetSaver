@@ -6,39 +6,8 @@ Handles user settings like library path, default author, and options.
 """
 
 import bpy
+from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy.types import AddonPreferences, PropertyGroup
-from bpy.props import StringProperty, BoolProperty, EnumProperty
-from pathlib import Path
-
-
-def get_default_library_path():
-    """
-    Auto-detect or create a default asset library path using Blender's API.
-    Cross-platform compatible using bpy.utils.user_resource().
-    
-    Returns:
-        str: Path to the default library folder
-    """
-    # Try to detect existing Blender user library
-    prefs = bpy.context.preferences
-    if hasattr(prefs, 'filepaths') and hasattr(prefs.filepaths, 'asset_libraries'):
-        # Check if any user libraries are defined
-        asset_libs = prefs.filepaths.asset_libraries
-        if asset_libs and len(asset_libs) > 0:
-            first_lib = asset_libs[0]
-            if hasattr(first_lib, 'path') and first_lib.path:
-                return first_lib.path
-    
-    # Fallback: Use Blender's user resource directory (cross-platform)
-    # This respects Blender's configured user paths and works on all OS
-    default_path = bpy.utils.user_resource('DATAFILES', path='assets', create=True)
-    
-    if default_path:
-        print(f"Using Blender user resource path for assets: {default_path}")
-        return default_path
-    
-    # Last resort fallback (should rarely happen)
-    return str(Path.home() / "BlenderAssets")
 
 
 class QuickAssetSaverPreferences(AddonPreferences):
@@ -46,62 +15,101 @@ class QuickAssetSaverPreferences(AddonPreferences):
     Addon preferences for Quick Asset Saver.
     Accessible via Edit > Preferences > Add-ons > Quick Asset Saver
     """
+
     bl_idname = __package__
-    
-    asset_library_path: StringProperty(
-        name="Asset Library Path",
-        description="Folder where saved assets will be stored as individual .blend files",
-        subtype='DIR_PATH',
-        default="",
+
+    def get_preference_libraries(self, context):
+        """Get list of configured asset libraries for preferences."""
+        items = []
+        prefs = bpy.context.preferences
+        if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
+            asset_libs = prefs.filepaths.asset_libraries
+            for idx, lib in enumerate(asset_libs):
+                if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
+                    items.append(
+                        (
+                            lib.path,
+                            lib.name,
+                            f"Save to: {lib.path}",
+                            "ASSET_MANAGER",
+                            idx,
+                        )
+                    )
+
+        if not items:
+            items.append(
+                (
+                    "NONE",
+                    "No Libraries Found",
+                    "No asset libraries configured in Blender",
+                    "ERROR",
+                    0,
+                )
+            )
+
+        return items
+
+    selected_library: EnumProperty(
+        name="Default Asset Library",
+        description="Default library where assets will be saved",
+        items=get_preference_libraries,
     )
-    
+
     default_author: StringProperty(
         name="Default Author",
         description="Default author name to embed in saved asset metadata",
         default="",
     )
-    
+
     auto_refresh: BoolProperty(
         name="Auto-Refresh Asset Browser",
         description="Automatically refresh the Asset Browser after saving an asset",
         default=True,
     )
-    
-    pack_images: BoolProperty(
-        name="Pack Images by Default",
-        description="Pack external images into the .blend file when saving assets",
-        default=True,
+
+    default_description: StringProperty(
+        name="Default Description",
+        description="Default description text for new assets",
+        default="",
     )
-    
+
+    default_license: StringProperty(
+        name="Default License",
+        description="Default license for new assets",
+        default="",
+    )
+
+    default_copyright: StringProperty(
+        name="Default Copyright",
+        description="Default copyright notice for new assets",
+        default="",
+    )
+
     def draw(self, context):
         """Draw the preferences UI."""
         layout = self.layout
-        
-        # Display instructions if path is not set
-        if not self.asset_library_path:
-            box = layout.box()
-            box.label(text="Welcome to Quick Asset Saver!", icon='INFO')
-            box.label(text="Please set your Asset Library Path below.")
-            box.label(text="If you don't have one, we'll create 'Easy Add Assets' in your home folder.")
-        
-        layout.prop(self, "asset_library_path")
-        
-        # Button to reset to default
-        row = layout.row()
-        row.operator("qas.reset_library_path", text="Reset to Default Path")
-        
+        layout.label(text="Default Asset Library:")
+        asset_row = layout.row()
+        split = asset_row.split(factor=0.35)
+        split.prop(self, "selected_library", text="")
+        split.label(
+            text="Add other libraries in the File Paths tab in Blender Preferences."
+        )
+
+        # Show path of selected library as helper text
+        if self.selected_library and self.selected_library != "NONE":
+            row = layout.row()
+            row.label(text=f"Path: {self.selected_library}", icon="FILE_FOLDER")
+
         layout.separator()
+        layout.label(text="Default Metadata:")
         layout.prop(self, "default_author")
-        layout.prop(self, "auto_refresh")
-        layout.prop(self, "pack_images")
-        
+        layout.prop(self, "default_description")
+        layout.prop(self, "default_license")
+        layout.prop(self, "default_copyright")
+
         layout.separator()
-        box = layout.box()
-        box.label(text="Usage:", icon='QUESTION')
-        box.label(text="1. In Asset Browser (Current File), right-click an asset")
-        box.label(text="2. Select 'Save to Library'")
-        box.label(text="3. Configure name, catalog, and metadata")
-        box.label(text="4. Click OK to save as a standalone .blend file")
+        layout.prop(self, "auto_refresh")
 
 
 class QASSaveProperties(PropertyGroup):
@@ -109,68 +117,150 @@ class QASSaveProperties(PropertyGroup):
     Property group for the save dialog.
     Holds temporary data during the asset saving process.
     """
-    asset_name: StringProperty(
+
+    def get_asset_libraries(self, context):
+        """Get list of configured asset libraries."""
+        items = []
+        prefs = bpy.context.preferences
+        if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
+            asset_libs = prefs.filepaths.asset_libraries
+            for idx, lib in enumerate(asset_libs):
+                if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
+                    items.append(
+                        (
+                            lib.path,
+                            lib.name,
+                            f"Save to: {lib.path}",
+                            "ASSET_MANAGER",
+                            idx,
+                        )
+                    )
+
+        if not items:
+            items.append(
+                ("NONE", "No Libraries", "No asset libraries configured", "ERROR", 0)
+            )
+
+        return items
+
+    def get_catalogs(self, context):
+        """Get list of catalogs from selected library."""
+        from .operators import get_catalogs_from_cdf
+
+        # Get the selected library path
+        library_path = (
+            self.selected_library if self.selected_library != "NONE" else None
+        )
+
+        if not library_path:
+            return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+
+        catalogs, enum_items = get_catalogs_from_cdf(library_path)
+        return (
+            enum_items
+            if enum_items
+            else [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+        )
+
+    selected_library: EnumProperty(
+        name="Target Library",
+        description="Asset library to save to",
+        items=get_asset_libraries,
+    )
+
+    last_asset_name: StringProperty(
+        name="Last Asset Name",
+        description="Internal tracking of last selected asset to prevent overwriting user edits",
+        default="",
+        options={"SKIP_SAVE", "HIDDEN"},
+    )
+
+    asset_display_name: StringProperty(
         name="Asset Name",
-        description="Name for the saved asset file (will be sanitized)",
+        description="Display name of the asset as it will appear in the library",
         default="",
     )
-    
+
+    asset_file_name: StringProperty(
+        name="File Name",
+        description="Sanitized filename (read-only, auto-generated from asset name)",
+        default="",
+        options={"SKIP_SAVE"},  # Don't save this, it's computed
+    )
+
+    catalog: EnumProperty(
+        name="Catalog",
+        description="Catalog to assign the asset to",
+        items=get_catalogs,
+    )
+
     asset_description: StringProperty(
         name="Description",
         description="Optional description for the asset metadata",
         default="",
     )
-    
+
     asset_tags: StringProperty(
         name="Tags",
         description="Comma-separated tags for the asset",
         default="",
     )
-    
+
     asset_author: StringProperty(
         name="Author",
         description="Author name for this asset",
         default="",
     )
-    
-    catalog_id: StringProperty(
-        name="Catalog ID",
-        description="Internal UUID for the selected catalog",
+
+    asset_license: StringProperty(
+        name="License",
+        description="License for this asset",
         default="",
     )
-    
+
+    asset_copyright: StringProperty(
+        name="Copyright",
+        description="Copyright notice for this asset",
+        default="",
+    )
+
     conflict_resolution: EnumProperty(
         name="If File Exists",
         description="What to do if a file with the same name already exists",
         items=[
-            ('INCREMENT', "Increment", "Save as Name_001.blend, etc.", 'DUPLICATE', 0),
-            ('OVERWRITE', "Overwrite", "Replace the existing file", 'FILE_REFRESH', 1),
-            ('CANCEL', "Cancel", "Don't save if file exists", 'CANCEL', 2),
+            ("INCREMENT", "Increment", "Save as Name_001.blend, etc.", "DUPLICATE", 0),
+            ("OVERWRITE", "Overwrite", "Replace the existing file", "FILE_REFRESH", 1),
+            ("CANCEL", "Cancel", "Don't save if file exists", "CANCEL", 2),
         ],
-        default='INCREMENT',
+        default="INCREMENT",
     )
 
 
 def get_addon_preferences(context=None):
     """
     Get the addon preferences.
-    
+
     Args:
         context: Blender context (optional, uses bpy.context if None)
-    
+
     Returns:
         QuickAssetSaverPreferences: The addon preferences
     """
     if context is None:
         context = bpy.context
-    
+
     preferences = context.preferences
     addon_prefs = preferences.addons[__package__].preferences
-    
-    # Initialize library path if not set
-    if not addon_prefs.asset_library_path:
-        addon_prefs.asset_library_path = get_default_library_path()
-    
+
+    # Initialize selected library if not set (pick first available)
+    if not addon_prefs.selected_library or addon_prefs.selected_library == "NONE":
+        if hasattr(preferences, "filepaths") and hasattr(
+            preferences.filepaths, "asset_libraries"
+        ):
+            asset_libs = preferences.filepaths.asset_libraries
+            if len(asset_libs) > 0 and hasattr(asset_libs[0], "path"):
+                addon_prefs.selected_library = asset_libs[0].path
+
     return addon_prefs
 
 
@@ -185,7 +275,7 @@ def register():
     """Register properties classes."""
     for cls in classes:
         bpy.utils.register_class(cls)
-    
+
     # Register property group on WindowManager for dialog data
     bpy.types.WindowManager.qas_save_props = bpy.props.PointerProperty(
         type=QASSaveProperties
@@ -195,8 +285,8 @@ def register():
 def unregister():
     """Unregister properties classes."""
     # Remove property group
-    if hasattr(bpy.types.WindowManager, 'qas_save_props'):
+    if hasattr(bpy.types.WindowManager, "qas_save_props"):
         del bpy.types.WindowManager.qas_save_props
-    
+
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

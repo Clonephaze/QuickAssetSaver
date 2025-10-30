@@ -1,80 +1,11 @@
 """
 Panels Module - Quick Asset Saver
 ==================================
-UI integration for context menus and panels in the Asset Browser.
-Adds "Save to Library" option to asset context menus when viewing Current File.
+UI integration for panels in the Asset Browser.
+Provides a side panel for saving assets to libraries.
 """
 
 import bpy
-from bpy.types import Menu
-
-
-def asset_browser_context_menu_draw(self, context):
-    """
-    Add 'Save to Library' option to the Asset Browser context menu.
-    Only appears when viewing Current File assets.
-    """
-    layout = self.layout
-    
-    # Check if we're in the Asset Browser viewing Current File
-    space = context.space_data
-    if not space or space.type != 'FILE_BROWSER':
-        return
-    
-    # Check if this is the asset browser and viewing "Current File"
-    if not hasattr(space, 'browse_mode') or space.browse_mode != 'ASSETS':
-        return
-    
-    # Check if we're viewing Current File (LOCAL library)
-    params = space.params
-    if not hasattr(params, 'asset_library_reference'):
-        return
-    
-    asset_lib_ref = params.asset_library_reference
-    
-    # In Blender 5.0+, LOCAL or 'Current File' indicates current blend file
-    is_current_file = (asset_lib_ref == 'LOCAL' or 
-                       asset_lib_ref == 'CURRENT' or
-                       getattr(params, 'asset_library_ref', None) == 'LOCAL')
-    
-    if not is_current_file:
-        return
-    
-    # Check if an asset is selected
-    if not context.asset:
-        return
-    
-    # Add separator and our operator
-    layout.separator()
-    layout.operator("qas.save_asset_to_library", icon='EXPORT')
-
-
-def asset_browser_header_draw(self, context):
-    """
-    Optional: Add a button to the Asset Browser header.
-    Only visible when viewing Current File.
-    """
-    layout = self.layout
-    space = context.space_data
-    
-    if not space or space.type != 'FILE_BROWSER':
-        return
-    
-    if not hasattr(space, 'browse_mode') or space.browse_mode != 'ASSETS':
-        return
-    
-    params = space.params
-    if not hasattr(params, 'asset_library_reference'):
-        return
-    
-    asset_lib_ref = params.asset_library_reference
-    is_current_file = (asset_lib_ref == 'LOCAL' or 
-                       asset_lib_ref == 'CURRENT' or
-                       getattr(params, 'asset_library_ref', None) == 'LOCAL')
-    
-    if is_current_file and context.asset:
-        layout.separator()
-        layout.operator("qas.save_asset_to_library", text="", icon='EXPORT')
 
 
 class QAS_PT_asset_tools_panel(bpy.types.Panel):
@@ -82,124 +13,118 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
     Optional side panel in Asset Browser for Quick Asset Saver tools.
     Provides additional UI for managing asset saving workflow.
     """
+
     bl_label = "Quick Asset Saver"
     bl_idname = "QAS_PT_asset_tools"
-    bl_space_type = 'FILE_BROWSER'
-    bl_region_type = 'TOOLS'
+    bl_space_type = "FILE_BROWSER"
+    bl_region_type = "TOOLS"
     bl_category = "Assets"
-    
+
     @classmethod
     def poll(cls, context):
         """Only show in Asset Browser when viewing Current File."""
         space = context.space_data
-        if not space or space.type != 'FILE_BROWSER':
+        if not space or space.type != "FILE_BROWSER":
             return False
-        
-        if not hasattr(space, 'browse_mode') or space.browse_mode != 'ASSETS':
+
+        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
             return False
-        
+
         params = space.params
-        if not hasattr(params, 'asset_library_reference'):
+        if not hasattr(params, "asset_library_reference"):
             return False
-        
+
         asset_lib_ref = params.asset_library_reference
-        is_current_file = (asset_lib_ref == 'LOCAL' or 
-                           asset_lib_ref == 'CURRENT' or
-                           getattr(params, 'asset_library_ref', None) == 'LOCAL')
-        
+        is_current_file = (
+            asset_lib_ref == "LOCAL"
+            or asset_lib_ref == "CURRENT"
+            or getattr(params, "asset_library_ref", None) == "LOCAL"
+        )
+
         return is_current_file
-    
+
     def draw(self, context):
         """Draw the panel UI."""
         layout = self.layout
-        
+
         from . import properties
+        from .operators import sanitize_name
+
         prefs = properties.get_addon_preferences(context)
-        
-        # Library path info
+        wm = context.window_manager
+        props = wm.qas_save_props
+
+        # Library selection dropdown
         box = layout.box()
-        box.label(text="Target Library:", icon='ASSET_MANAGER')
+        box.label(text="Target Library:", icon="ASSET_MANAGER")
+        box.prop(props, "selected_library", text="")
+        box.label(
+            text="Add other libraries in the File Paths tab in Blender Preferences."
+        )
         
-        if prefs.asset_library_path:
-            # Show path (truncated if too long)
-            path_str = str(prefs.asset_library_path)
-            if len(path_str) > 30:
-                path_str = "..." + path_str[-27:]
-            box.label(text=path_str, icon='FILE_FOLDER')
-        else:
-            box.label(text="Not set", icon='ERROR')
-        
-        box.operator("qas.open_library_folder", icon='FILEBROWSER')
-        
+        # Show path of selected library as helper text
+        if props.selected_library and props.selected_library != 'NONE':
+            row = box.row()
+            row.label(text=f"Path: {props.selected_library}", icon="FILE_FOLDER")
+            row.operator("qas.open_library_folder", text="", icon="FILEBROWSER")
+
         layout.separator()
-        
-        # Main action
+
+        # Main action - show options if asset is selected
         if context.asset:
-            layout.label(text="Selected Asset:", icon='ASSET_MANAGER')
-            asset_name = getattr(context.asset, 'name', 'Unknown')
-            layout.label(text=f"  {asset_name}")
+            # Auto-populate properties only when asset selection changes
+            asset_name = getattr(context.asset, "name", "Unknown")
+            
+            # Only update if this is a different asset than before
+            if props.last_asset_name != asset_name:
+                props.last_asset_name = asset_name
+                props.asset_display_name = asset_name
+                props.asset_author = prefs.default_author
+                props.asset_description = prefs.default_description
+                props.asset_license = prefs.default_license
+                props.asset_copyright = prefs.default_copyright
+                
+            # Always update file name based on display name
+            if props.asset_display_name:
+                props.asset_file_name = sanitize_name(props.asset_display_name)
+            
+            # Asset save options
+            outer_box = layout.box()
+            outer_box.label(text="Selected Asset:", icon="ASSET_MANAGER")
+            outer_box.label(text=f"  {asset_name}")
+            
+            inner_box = outer_box.box()
+            inner_box.label(text="Save Options:", icon="SETTINGS")
+            
+            inner_box.prop(props, "asset_display_name")
+            inner_box.prop(props, "catalog")
+            inner_box.prop(props, "asset_author")
+            inner_box.prop(props, "asset_description")
+            inner_box.prop(props, "asset_license")
+            inner_box.prop(props, "asset_copyright")
+            inner_box.prop(props, "asset_tags")
+            inner_box.prop(props, "conflict_resolution")
+            
             layout.separator()
-            layout.operator("qas.save_asset_to_library", icon='EXPORT')
+            layout.operator("qas.save_asset_to_library_direct", text="Save to Asset Library", icon="EXPORT")
         else:
             box = layout.box()
-            box.label(text="No asset selected", icon='INFO')
-            box.label(text="Right-click an asset")
+            box.label(text="No asset selected", icon="INFO")
+            box.label(text="Select an asset")
             box.label(text="to save it to your library")
 
 
 # Registration
-classes = (
-    QAS_PT_asset_tools_panel,
-)
+classes = (QAS_PT_asset_tools_panel,)
 
 
 def register():
-    """Register UI elements and menu items."""
+    """Register UI elements."""
     for cls in classes:
         bpy.utils.register_class(cls)
-    
-    # Add to Asset Browser context menu
-    # The context menu for assets is ASSETBROWSER_MT_context_menu in Blender 5.0+
-    # We'll try multiple possible menu names for compatibility
-    menus_to_try = [
-        'ASSETBROWSER_MT_context_menu',
-        'FILEBROWSER_MT_context_menu',
-        'ASSETBROWSER_MT_asset',
-    ]
-    
-    for menu_name in menus_to_try:
-        if hasattr(bpy.types, menu_name):
-            menu_class = getattr(bpy.types, menu_name)
-            menu_class.append(asset_browser_context_menu_draw)
-            print(f"Quick Asset Saver: Added to {menu_name}")
-            break
-    
-    # Optional: Add to header
-    # bpy.types.FILEBROWSER_HT_header.append(asset_browser_header_draw)
 
 
 def unregister():
-    """Unregister UI elements and menu items."""
-    # Remove from context menu
-    menus_to_try = [
-        'ASSETBROWSER_MT_context_menu',
-        'FILEBROWSER_MT_context_menu',
-        'ASSETBROWSER_MT_asset',
-    ]
-    
-    for menu_name in menus_to_try:
-        if hasattr(bpy.types, menu_name):
-            menu_class = getattr(bpy.types, menu_name)
-            try:
-                menu_class.remove(asset_browser_context_menu_draw)
-            except:
-                pass
-    
-    # Remove from header if added
-    # try:
-    #     bpy.types.FILEBROWSER_HT_header.remove(asset_browser_header_draw)
-    # except:
-    #     pass
-    
+    """Unregister UI elements."""
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
