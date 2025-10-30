@@ -1,5 +1,6 @@
 if "bpy" in locals():
     import importlib
+
     if "operators" in locals():
         importlib.reload(operators)  # noqa: F821
     if "properties" in locals():
@@ -7,9 +8,7 @@ if "bpy" in locals():
     if "panels" in locals():
         importlib.reload(panels)  # noqa: F821
 else:
-    from . import operators
-    from . import properties
-    from . import panels
+    from . import operators, panels, properties
 
 import bpy  # noqa: F401
 
@@ -19,7 +18,7 @@ def register():
     properties.register()
     operators.register()
     panels.register()
-    
+
     print("Quick Asset Saver registered successfully")
 
 
@@ -28,7 +27,7 @@ def unregister():
     panels.unregister()
     operators.unregister()
     properties.unregister()
-    
+
     print("Quick Asset Saver unregistered")
 
 
