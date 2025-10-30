@@ -11,15 +11,11 @@ from bpy.types import AddonPreferences, PropertyGroup
 
 
 class QuickAssetSaverPreferences(AddonPreferences):
-    """
-    Addon preferences for Quick Asset Saver.
-    Accessible via Edit > Preferences > Add-ons > Quick Asset Saver
-    """
+    """Addon preferences for Quick Asset Saver."""
 
     bl_idname = __package__
 
     def get_preference_libraries(self, context):
-        """Get list of configured asset libraries for preferences."""
         items = []
         prefs = bpy.context.preferences
         if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
@@ -86,17 +82,13 @@ class QuickAssetSaverPreferences(AddonPreferences):
     )
 
     def draw(self, context):
-        """Draw the preferences UI."""
         layout = self.layout
         layout.label(text="Default Asset Library:")
         asset_row = layout.row()
         split = asset_row.split(factor=0.35)
         split.prop(self, "selected_library", text="")
-        split.label(
-            text="Add other libraries in the File Paths tab in Blender Preferences."
-        )
+        split.label(text="Add other libraries in the File Paths tab in Blender Preferences.")
 
-        # Show path of selected library as helper text
         if self.selected_library and self.selected_library != "NONE":
             row = layout.row()
             row.label(text=f"Path: {self.selected_library}", icon="FILE_FOLDER")
@@ -113,13 +105,9 @@ class QuickAssetSaverPreferences(AddonPreferences):
 
 
 class QASSaveProperties(PropertyGroup):
-    """
-    Property group for the save dialog.
-    Holds temporary data during the asset saving process.
-    """
+    """Property group for asset saving workflow."""
 
     def get_asset_libraries(self, context):
-        """Get list of configured asset libraries."""
         items = []
         prefs = bpy.context.preferences
         if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
@@ -144,23 +132,14 @@ class QASSaveProperties(PropertyGroup):
         return items
 
     def get_catalogs(self, context):
-        """Get list of catalogs from selected library."""
         from .operators import get_catalogs_from_cdf
 
-        # Get the selected library path
-        library_path = (
-            self.selected_library if self.selected_library != "NONE" else None
-        )
-
+        library_path = self.selected_library if self.selected_library != "NONE" else None
         if not library_path:
             return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
         catalogs, enum_items = get_catalogs_from_cdf(library_path)
-        return (
-            enum_items
-            if enum_items
-            else [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
-        )
+        return enum_items if enum_items else [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
     selected_library: EnumProperty(
         name="Target Library",
@@ -185,7 +164,7 @@ class QASSaveProperties(PropertyGroup):
         name="File Name",
         description="Sanitized filename (read-only, auto-generated from asset name)",
         default="",
-        options={"SKIP_SAVE"},  # Don't save this, it's computed
+        options={"SKIP_SAVE"},
     )
 
     catalog: EnumProperty(
@@ -237,26 +216,15 @@ class QASSaveProperties(PropertyGroup):
 
 
 def get_addon_preferences(context=None):
-    """
-    Get the addon preferences.
-
-    Args:
-        context: Blender context (optional, uses bpy.context if None)
-
-    Returns:
-        QuickAssetSaverPreferences: The addon preferences
-    """
+    """Get the addon preferences."""
     if context is None:
         context = bpy.context
 
     preferences = context.preferences
     addon_prefs = preferences.addons[__package__].preferences
 
-    # Initialize selected library if not set (pick first available)
     if not addon_prefs.selected_library or addon_prefs.selected_library == "NONE":
-        if hasattr(preferences, "filepaths") and hasattr(
-            preferences.filepaths, "asset_libraries"
-        ):
+        if hasattr(preferences, "filepaths") and hasattr(preferences.filepaths, "asset_libraries"):
             asset_libs = preferences.filepaths.asset_libraries
             if len(asset_libs) > 0 and hasattr(asset_libs[0], "path"):
                 addon_prefs.selected_library = asset_libs[0].path
@@ -264,7 +232,6 @@ def get_addon_preferences(context=None):
     return addon_prefs
 
 
-# Registration
 classes = (
     QuickAssetSaverPreferences,
     QASSaveProperties,
@@ -272,21 +239,13 @@ classes = (
 
 
 def register():
-    """Register properties classes."""
     for cls in classes:
         bpy.utils.register_class(cls)
-
-    # Register property group on WindowManager for dialog data
-    bpy.types.WindowManager.qas_save_props = bpy.props.PointerProperty(
-        type=QASSaveProperties
-    )
+    bpy.types.WindowManager.qas_save_props = bpy.props.PointerProperty(type=QASSaveProperties)
 
 
 def unregister():
-    """Unregister properties classes."""
-    # Remove property group
     if hasattr(bpy.types.WindowManager, "qas_save_props"):
         del bpy.types.WindowManager.qas_save_props
-
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

@@ -17,71 +17,33 @@ from bpy.types import Operator
 def sanitize_name(name, max_length=128):
     """
     Sanitize a filename to be cross-platform compatible.
-    Removes or replaces invalid filesystem characters for Windows/macOS/Linux.
-    Replaces spaces with underscores for cleaner filenames.
 
     Args:
-        name (str): The original filename
-        max_length (int): Maximum length for the filename
+        name: The original filename
+        max_length: Maximum length for the filename
 
     Returns:
-        str: Sanitized filename safe for all platforms
-
-    Examples:
-        >>> sanitize_name("My Asset/Test*")
-        'My_Asset_Test_'
-        >>> sanitize_name("Material:Wood|Pine")
-        'Material_Wood_Pine'
-        >>> sanitize_name("My Material Name")
-        'My_Material_Name'
-        >>> sanitize_name("x" * 200)[:128] == "x" * 128
-        True
+        Sanitized filename safe for all platforms
     """
-    # Replace invalid characters with underscore
-    # Windows invalid: < > : " / \ | ? *
-    # Also remove control characters
     invalid_chars = r'[<>:"/\\|?*\x00-\x1f]'
     sanitized = re.sub(invalid_chars, "_", name)
-
-    # Replace spaces with underscores for cleaner filenames
     sanitized = sanitized.replace(" ", "_")
-
-    # Remove leading/trailing dots and underscores (problematic on Windows)
     sanitized = sanitized.strip("._")
-
-    # Ensure not empty
+    
     if not sanitized:
         sanitized = "asset"
-
-    # Truncate to max_length
-    sanitized = sanitized[:max_length]
-
-    return sanitized
+    
+    return sanitized[:max_length]
 
 
 def increment_filename(base_path, name, extension=".blend"):
-    """
-    Generate an incremented filename if the base file exists.
-
-    Args:
-        base_path (Path): Directory where the file will be saved
-        name (str): Base filename without extension
-        extension (str): File extension (default: .blend)
-
-    Returns:
-        Path: Full path with incremented name if necessary
-
-    Examples:
-        # If "Material.blend" exists, returns "Material_001.blend"
-        # If "Material_001.blend" also exists, returns "Material_002.blend"
-    """
+    """Generate an incremented filename if the base file exists."""
     base_path = Path(base_path)
     filepath = base_path / f"{name}{extension}"
 
     if not filepath.exists():
         return filepath
 
-    # Find next available increment
     counter = 1
     while True:
         new_name = f"{name}_{counter:03d}{extension}"
@@ -89,8 +51,7 @@ def increment_filename(base_path, name, extension=".blend"):
         if not filepath.exists():
             return filepath
         counter += 1
-
-        # Safety: prevent infinite loop
+        
         if counter > 9999:
             raise RuntimeError(f"Too many incremental files for {name}")
 
@@ -159,47 +120,20 @@ def get_catalogs_from_cdf(library_path):
 
 
 def collect_datablocks_for_asset(asset_data):
-    """
-    Collect the main datablock for an asset.
-    bpy.data.libraries.write() will automatically include indirect dependencies.
-
-    Args:
-        asset_data: Asset data from context.asset or asset_file_handle
-
-    Returns:
-        set: Set of ID datablocks to write
-    """
-    # In Blender 5.0, we need to get the actual ID datablock from the asset
-    # The asset_data from context provides information to locate it
+    """Collect the main datablock for an asset."""
     datablocks = set()
-
-    # Asset data should have a local_id or we need to find it in bpy.data
     if hasattr(asset_data, "local_id") and asset_data.local_id:
         datablocks.add(asset_data.local_id)
-
     return datablocks
 
 
 def write_blend_file(filepath, datablocks):
-    """
-    Write a .blend file containing only the specified datablocks.
-
-    Args:
-        filepath (Path): Destination .blend file path
-        datablocks (set): Set of bpy.types.ID datablocks to write
-
-    Returns:
-        bool: True if successful, False otherwise
-    """
+    """Write a .blend file containing only the specified datablocks."""
     try:
         filepath = Path(filepath)
-
-        # Use a temporary file for atomic write
         temp_dir = filepath.parent
         temp_file = temp_dir / f".tmp_{filepath.name}"
 
-        # Write the blend file with only specified datablocks
-        # bpy.data.libraries.write automatically includes indirect dependencies
         bpy.data.libraries.write(
             str(temp_file),
             datablocks,
@@ -208,18 +142,14 @@ def write_blend_file(filepath, datablocks):
             compress=True,
         )
 
-        # Move temp file to final location (atomic on most systems)
         if filepath.exists():
-            filepath.unlink()  # Remove existing file
+            filepath.unlink()
 
         shutil.move(str(temp_file), str(filepath))
-
-        print(f"Successfully wrote {filepath}")
         return True
 
     except Exception as e:
         print(f"Error writing blend file: {e}")
-        # Clean up temp file if it exists
         if temp_file.exists():
             temp_file.unlink()
         return False
@@ -319,7 +249,6 @@ class QAS_OT_open_library_folder(Operator):
     bl_options = {"REGISTER"}
 
     def execute(self, context):
-        """Open folder in OS file browser."""
         wm = context.window_manager
         props = wm.qas_save_props
 
@@ -332,9 +261,7 @@ class QAS_OT_open_library_folder(Operator):
             self.report({"ERROR"}, "Library path does not exist")
             return {"CANCELLED"}
 
-        # Open in file browser
         bpy.ops.wm.path_open(filepath=str(library_path))
-
         return {"FINISHED"}
 
 
@@ -463,7 +390,6 @@ class QAS_OT_save_asset_to_library_direct(Operator):
         return {"FINISHED"}
 
 
-# Registration
 classes = (
     QAS_OT_save_asset_to_library_direct,
     QAS_OT_open_library_folder,
@@ -471,12 +397,10 @@ classes = (
 
 
 def register():
-    """Register operator classes."""
     for cls in classes:
         bpy.utils.register_class(cls)
 
 
 def unregister():
-    """Unregister operator classes."""
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
