@@ -91,6 +91,56 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
             inner_box.prop(props, "asset_tags")
             inner_box.prop(props, "conflict_resolution")
             
+            # Show target path preview
+            if props.selected_library and props.selected_library != 'NONE' and props.asset_file_name:
+                from pathlib import Path
+                from .operators import get_catalog_path_from_uuid, build_asset_filename
+                
+                preview_box = layout.box()
+                preview_box.label(text="Target Path:", icon="FILE_FOLDER")
+                
+                # Build the preview path
+                library_path = Path(props.selected_library)
+                target_path = library_path
+                
+                # Add catalog subfolder if enabled
+                if prefs.use_catalog_subfolders and props.catalog and props.catalog != "UNASSIGNED":
+                    catalog_path = get_catalog_path_from_uuid(props.selected_library, props.catalog)
+                    if catalog_path:
+                        path_parts = catalog_path.split("/")
+                        sanitized_parts = [sanitize_name(part, max_length=64) for part in path_parts if part]
+                        for part in sanitized_parts:
+                            target_path = target_path / part
+                
+                # Build the final filename with naming conventions
+                final_filename = build_asset_filename(props.asset_file_name, prefs)
+                full_path = target_path / f"{final_filename}.blend"
+                
+                # Display relative path if it fits, otherwise show just the filename with ellipsis
+                try:
+                    relative_path = full_path.relative_to(library_path)
+                    path_str = str(relative_path)
+                except ValueError:
+                    path_str = full_path.name
+                
+                # Split long paths across multiple lines
+                if len(path_str) > 40:
+                    col = preview_box.column(align=True)
+                    col.scale_y = 0.8
+                    # Show library name
+                    col.label(text=f"  {library_path.name}/", icon="BLANK1")
+                    # Show subdirectories
+                    if target_path != library_path:
+                        try:
+                            subpath = target_path.relative_to(library_path)
+                            col.label(text=f"    {subpath}/", icon="BLANK1")
+                        except ValueError:
+                            pass
+                    # Show filename
+                    col.label(text=f"    {final_filename}.blend", icon="BLANK1")
+                else:
+                    preview_box.label(text=f"  {path_str}", icon="BLANK1")
+            
             layout.separator()
             layout.operator("qas.save_asset_to_library_direct", text="Save to Asset Library", icon="EXPORT")
         else:

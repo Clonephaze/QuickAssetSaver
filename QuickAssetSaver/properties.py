@@ -81,6 +81,32 @@ class QuickAssetSaverPreferences(AddonPreferences):
         default="",
     )
 
+    use_catalog_subfolders: BoolProperty(
+        name="Organize by Catalog",
+        description="Automatically create subfolders based on catalog structure (e.g., Materials/Metal). Keeps your library organized",
+        default=True,
+    )
+
+    filename_prefix: StringProperty(
+        name="Filename Prefix",
+        description="Optional prefix to add to all saved asset filenames (e.g., 'MY_' results in MY_AssetName.blend)",
+        default="",
+        maxlen=32,
+    )
+
+    filename_suffix: StringProperty(
+        name="Filename Suffix",
+        description="Optional suffix to add to all saved asset filenames (e.g., '_v1' results in AssetName_v1.blend)",
+        default="",
+        maxlen=32,
+    )
+
+    include_date_in_filename: BoolProperty(
+        name="Include Date in Filename",
+        description="Append date stamp to filename (e.g., AssetName_2025-11-07.blend)",
+        default=False,
+    )
+
     def draw(self, context):
         layout = self.layout
         layout.label(text="Default Asset Library:")
@@ -94,7 +120,17 @@ class QuickAssetSaverPreferences(AddonPreferences):
             row.label(text=f"Path: {self.selected_library}", icon="FILE_FOLDER")
 
         layout.separator()
-        layout.label(text="Default Metadata:")
+        layout.label(text="Organization:")
+        layout.prop(self, "use_catalog_subfolders")
+
+        layout.separator()
+        layout.label(text="Filename Conventions:", icon="FILE_BLEND")
+        layout.prop(self, "filename_prefix")
+        layout.prop(self, "filename_suffix")
+        layout.prop(self, "include_date_in_filename")
+
+        layout.separator()
+        layout.label(text="Default Metadata:", icon="FILE_CACHE")
         layout.prop(self, "default_author")
         layout.prop(self, "default_description")
         layout.prop(self, "default_license")
