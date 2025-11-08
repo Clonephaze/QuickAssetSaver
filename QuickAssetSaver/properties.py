@@ -124,13 +124,13 @@ class QuickAssetSaverPreferences(AddonPreferences):
         layout.prop(self, "use_catalog_subfolders")
 
         layout.separator()
-        layout.label(text="Filename Conventions:")
+        layout.label(text="Filename Conventions:", icon="FILE_BLEND")
         layout.prop(self, "filename_prefix")
         layout.prop(self, "filename_suffix")
         layout.prop(self, "include_date_in_filename")
 
         layout.separator()
-        layout.label(text="Default Metadata:")
+        layout.label(text="Default Metadata:", icon="FILE_CACHE")
         layout.prop(self, "default_author")
         layout.prop(self, "default_description")
         layout.prop(self, "default_license")
