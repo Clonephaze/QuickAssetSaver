@@ -36,6 +36,49 @@ def sanitize_name(name, max_length=128):
     return sanitized[:max_length]
 
 
+def build_asset_filename(base_name, prefs):
+    """
+    Build the final asset filename with optional prefix, suffix, and date.
+
+    Args:
+        base_name: The sanitized base name of the asset
+        prefs: Addon preferences containing naming convention settings
+
+    Returns:
+        str: Final filename without extension
+    """
+    from datetime import datetime
+    
+    # Start with the base name
+    filename_parts = []
+    
+    # Add prefix if specified
+    if prefs.filename_prefix:
+        prefix = sanitize_name(prefs.filename_prefix, max_length=32).strip("_")
+        if prefix:
+            filename_parts.append(prefix)
+    
+    # Add the base name
+    filename_parts.append(base_name)
+    
+    # Add suffix if specified
+    if prefs.filename_suffix:
+        suffix = sanitize_name(prefs.filename_suffix, max_length=32).strip("_")
+        if suffix:
+            filename_parts.append(suffix)
+    
+    # Add date if enabled
+    if prefs.include_date_in_filename:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        filename_parts.append(date_str)
+    
+    # Join all parts with underscores
+    final_name = "_".join(filename_parts)
+    
+    # Ensure total length doesn't exceed reasonable limits
+    return sanitize_name(final_name, max_length=200)
+
+
 def increment_filename(base_path, name, extension=".blend"):
     """Generate an incremented filename if the base file exists."""
     base_path = Path(base_path)
@@ -54,6 +97,30 @@ def increment_filename(base_path, name, extension=".blend"):
         
         if counter > 9999:
             raise RuntimeError(f"Too many incremental files for {name}")
+
+
+def get_catalog_path_from_uuid(library_path, catalog_uuid):
+    """
+    Get the catalog path string from a catalog UUID.
+
+    Args:
+        library_path (str): Path to the asset library folder
+        catalog_uuid (str): UUID of the catalog
+
+    Returns:
+        str: Catalog path (e.g., "Materials/Metal") or None if not found
+    """
+    if not catalog_uuid or catalog_uuid == "UNASSIGNED":
+        return None
+
+    catalogs, _ = get_catalogs_from_cdf(library_path)
+    
+    # Search for the UUID in the catalog mapping
+    for path, uuid_str in catalogs.items():
+        if uuid_str == catalog_uuid:
+            return path
+    
+    return None
 
 
 def get_catalogs_from_cdf(library_path):
@@ -292,28 +359,55 @@ class QAS_OT_save_asset_to_library_direct(Operator):
             self.report({"ERROR"}, f"Library path does not exist: {library_path}")
             return {"CANCELLED"}
 
+        # Determine target directory based on catalog preference
+        target_dir = library_path
+        
+        if prefs.use_catalog_subfolders and props.catalog and props.catalog != "UNASSIGNED":
+            # Get the catalog path from UUID
+            catalog_path = get_catalog_path_from_uuid(props.selected_library, props.catalog)
+            
+            if catalog_path:
+                # Sanitize catalog path components
+                path_parts = catalog_path.split("/")
+                sanitized_parts = [sanitize_name(part, max_length=64) for part in path_parts if part]
+                
+                # Create the full subfolder path
+                target_dir = library_path
+                for part in sanitized_parts:
+                    target_dir = target_dir / part
+                
+                # Create the directory structure if it doesn't exist
+                try:
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                except OSError as e:
+                    self.report({"ERROR"}, f"Could not create catalog subfolder: {e}")
+                    return {"CANCELLED"}
+
         # Test write permissions
         try:
-            test_file = library_path / ".write_test"
+            test_file = target_dir / ".write_test"
             test_file.touch()
             test_file.unlink()
         except (OSError, PermissionError):
-            self.report({"ERROR"}, f"Library path is not writable: {library_path}")
+            self.report({"ERROR"}, f"Target path is not writable: {target_dir}")
             return {"CANCELLED"}
 
-        # Get sanitized filename from file_name property
-        sanitized_name = props.asset_file_name
-        if not sanitized_name:
+        # Get sanitized filename from file_name property and apply naming conventions
+        base_sanitized_name = props.asset_file_name
+        if not base_sanitized_name:
             self.report({"ERROR"}, "Invalid file name")
             return {"CANCELLED"}
 
+        # Apply prefix, suffix, and date if configured
+        final_filename = build_asset_filename(base_sanitized_name, prefs)
+
         # Handle file conflicts
         if props.conflict_resolution == "INCREMENT":
-            output_path = increment_filename(library_path, sanitized_name)
+            output_path = increment_filename(target_dir, final_filename)
         elif props.conflict_resolution == "OVERWRITE":
-            output_path = library_path / f"{sanitized_name}.blend"
+            output_path = target_dir / f"{final_filename}.blend"
         else:  # CANCEL
-            check_path = library_path / f"{sanitized_name}.blend"
+            check_path = target_dir / f"{final_filename}.blend"
             if check_path.exists():
                 self.report({"WARNING"}, f"File already exists: {check_path.name}")
                 return {"CANCELLED"}
