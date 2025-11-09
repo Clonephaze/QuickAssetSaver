@@ -9,41 +9,94 @@ import bpy
 from bpy.props import BoolProperty, EnumProperty, StringProperty
 from bpy.types import AddonPreferences, PropertyGroup
 
+# Constants
+MAX_FILENAME_AFFIX_LENGTH = 32  # Maximum length for prefix/suffix
+NONE_LIBRARY_IDENTIFIER = "NONE"  # Identifier for "no library selected"
+
+
+def build_library_enum_items():
+    """
+    Build enum items for asset library selection.
+
+    Retrieves user-configured asset libraries from Blender preferences
+    and formats them as enum items for property dropdowns.
+
+    Returns:
+        list: List of tuples in format (identifier, name, description, icon, index)
+              Returns error item if no libraries are configured
+    """
+    items = []
+    prefs = bpy.context.preferences
+
+    if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
+        asset_libs = prefs.filepaths.asset_libraries
+        for idx, lib in enumerate(asset_libs):
+            if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
+                items.append(
+                    (
+                        lib.path,
+                        lib.name,
+                        f"Save to: {lib.path}",
+                        "ASSET_MANAGER",
+                        idx,
+                    )
+                )
+
+    if not items:
+        items.append(
+            (
+                NONE_LIBRARY_IDENTIFIER,
+                "No Libraries Found",
+                "No asset libraries configured in Blender preferences",
+                "ERROR",
+                0,
+            )
+        )
+
+    return items
+
+
+def validate_string_length(value, max_length, property_name):
+    """
+    Validate and truncate string to maximum length.
+
+    Args:
+        value: String value to validate
+        max_length: Maximum allowed length
+        property_name: Name of property for logging
+
+    Returns:
+        str: Validated (possibly truncated) string
+    """
+    if not value:
+        return value
+
+    if len(value) > max_length:
+        print(
+            f"Warning: {property_name} truncated from {len(value)} to {max_length} characters"
+        )
+        return value[:max_length]
+
+    return value
+
 
 class QuickAssetSaverPreferences(AddonPreferences):
-    """Addon preferences for Quick Asset Saver."""
+    """
+    Addon preferences for Quick Asset Saver.
+
+    Stores user preferences including:
+    - Default asset library
+    - Default metadata (author, description, license, copyright)
+    - File organization settings (catalog subfolders)
+    - Filename conventions (prefix, suffix, date)
+    - Auto-refresh behavior
+    """
 
     bl_idname = __package__
 
     def get_preference_libraries(self, context):
-        items = []
-        prefs = bpy.context.preferences
-        if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
-            asset_libs = prefs.filepaths.asset_libraries
-            for idx, lib in enumerate(asset_libs):
-                if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
-                    items.append(
-                        (
-                            lib.path,
-                            lib.name,
-                            f"Save to: {lib.path}",
-                            "ASSET_MANAGER",
-                            idx,
-                        )
-                    )
-
-        if not items:
-            items.append(
-                (
-                    "NONE",
-                    "No Libraries Found",
-                    "No asset libraries configured in Blender",
-                    "ERROR",
-                    0,
-                )
-            )
-
-        return items
+        """Get asset libraries for preferences dropdown."""
+        return build_library_enum_items()
 
     selected_library: EnumProperty(
         name="Default Asset Library",
@@ -87,18 +140,36 @@ class QuickAssetSaverPreferences(AddonPreferences):
         default=True,
     )
 
+    def update_filename_prefix(self, context):
+        """Validate filename prefix length."""
+        if len(self.filename_prefix) > MAX_FILENAME_AFFIX_LENGTH:
+            print(
+                f"Warning: Filename prefix too long, truncating to {MAX_FILENAME_AFFIX_LENGTH} characters"
+            )
+            self.filename_prefix = self.filename_prefix[:MAX_FILENAME_AFFIX_LENGTH]
+
+    def update_filename_suffix(self, context):
+        """Validate filename suffix length."""
+        if len(self.filename_suffix) > MAX_FILENAME_AFFIX_LENGTH:
+            print(
+                f"Warning: Filename suffix too long, truncating to {MAX_FILENAME_AFFIX_LENGTH} characters"
+            )
+            self.filename_suffix = self.filename_suffix[:MAX_FILENAME_AFFIX_LENGTH]
+
     filename_prefix: StringProperty(
         name="Filename Prefix",
-        description="Optional prefix to add to all saved asset filenames (e.g., 'MY_' results in MY_AssetName.blend)",
+        description=f"Optional prefix to add to all saved asset filenames (e.g., 'MY_' results in MY_AssetName.blend). Max {MAX_FILENAME_AFFIX_LENGTH} characters",
         default="",
-        maxlen=32,
+        maxlen=MAX_FILENAME_AFFIX_LENGTH,
+        update=update_filename_prefix,
     )
 
     filename_suffix: StringProperty(
         name="Filename Suffix",
-        description="Optional suffix to add to all saved asset filenames (e.g., '_v1' results in AssetName_v1.blend)",
+        description=f"Optional suffix to add to all saved asset filenames (e.g., '_v1' results in AssetName_v1.blend). Max {MAX_FILENAME_AFFIX_LENGTH} characters",
         default="",
-        maxlen=32,
+        maxlen=MAX_FILENAME_AFFIX_LENGTH,
+        update=update_filename_suffix,
     )
 
     include_date_in_filename: BoolProperty(
@@ -108,14 +179,29 @@ class QuickAssetSaverPreferences(AddonPreferences):
     )
 
     def draw(self, context):
+        """
+        Draw the addon preferences UI.
+
+        Displays settings for:
+        - Default asset library selection
+        - File organization options
+        - Filename conventions
+        - Default metadata values
+        - Auto-refresh behavior
+
+        Args:
+            context: Blender context
+        """
         layout = self.layout
         layout.label(text="Default Asset Library:")
         asset_row = layout.row()
         split = asset_row.split(factor=0.35)
         split.prop(self, "selected_library", text="")
-        split.label(text="Add other libraries in the File Paths tab in Blender Preferences.")
+        split.label(
+            text="Add other libraries in the File Paths tab in Blender Preferences."
+        )
 
-        if self.selected_library and self.selected_library != "NONE":
+        if self.selected_library and self.selected_library != NONE_LIBRARY_IDENTIFIER:
             row = layout.row()
             row.label(text=f"Path: {self.selected_library}", icon="FILE_FOLDER")
 
@@ -141,41 +227,59 @@ class QuickAssetSaverPreferences(AddonPreferences):
 
 
 class QASSaveProperties(PropertyGroup):
-    """Property group for asset saving workflow."""
+    """
+    Property group for asset saving workflow.
+
+    Stores per-asset settings during the save process including:
+    - Target library selection
+    - Asset metadata (name, author, description, tags, license, copyright)
+    - Catalog assignment
+    - Conflict resolution strategy
+    """
 
     def get_asset_libraries(self, context):
-        items = []
-        prefs = bpy.context.preferences
-        if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
-            asset_libs = prefs.filepaths.asset_libraries
-            for idx, lib in enumerate(asset_libs):
-                if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
-                    items.append(
-                        (
-                            lib.path,
-                            lib.name,
-                            f"Save to: {lib.path}",
-                            "ASSET_MANAGER",
-                            idx,
-                        )
-                    )
-
-        if not items:
-            items.append(
-                ("NONE", "No Libraries", "No asset libraries configured", "ERROR", 0)
-            )
-
-        return items
+        """Get asset libraries for property dropdown."""
+        return build_library_enum_items()
 
     def get_catalogs(self, context):
-        from .operators import get_catalogs_from_cdf
+        """
+        Get available catalogs from the selected library.
 
-        library_path = self.selected_library if self.selected_library != "NONE" else None
+        Reads the blender_assets.cats.txt file from the selected library
+        and returns catalog options for the enum property.
+
+        Args:
+            context: Blender context
+
+        Returns:
+            list: List of catalog enum items (identifier, name, description, icon, index)
+                  Returns "Unassigned" if no library selected or no catalogs found
+        """
+        try:
+            from .operators import get_catalogs_from_cdf
+        except ImportError as e:
+            # If import fails, return default
+            print(f"Warning: Could not import get_catalogs_from_cdf: {e}")
+            return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+
+        library_path = (
+            self.selected_library
+            if self.selected_library != NONE_LIBRARY_IDENTIFIER
+            else None
+        )
         if not library_path:
             return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
-        catalogs, enum_items = get_catalogs_from_cdf(library_path)
-        return enum_items if enum_items else [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+        try:
+            catalogs, enum_items = get_catalogs_from_cdf(library_path)
+            return (
+                enum_items
+                if enum_items
+                else [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+            )
+        except Exception as e:
+            print(f"Error loading catalogs from {library_path}: {e}")
+            return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
     selected_library: EnumProperty(
         name="Target Library",
@@ -252,35 +356,150 @@ class QASSaveProperties(PropertyGroup):
 
 
 def get_addon_preferences(context=None):
-    """Get the addon preferences."""
+    """
+    Get the addon preferences instance.
+
+    Retrieves the Quick Asset Saver addon preferences from Blender's
+    addon system. Automatically initializes default library if none selected.
+
+    Args:
+        context: Blender context (optional, uses bpy.context if None)
+
+    Returns:
+        QuickAssetSaverPreferences: The addon preferences instance
+
+    Note:
+        Side effect: Sets selected_library to first available library
+        if none is currently selected. This ensures a valid default.
+    """
     if context is None:
         context = bpy.context
 
     preferences = context.preferences
     addon_prefs = preferences.addons[__package__].preferences
 
-    if not addon_prefs.selected_library or addon_prefs.selected_library == "NONE":
-        if hasattr(preferences, "filepaths") and hasattr(preferences.filepaths, "asset_libraries"):
-            asset_libs = preferences.filepaths.asset_libraries
-            if len(asset_libs) > 0 and hasattr(asset_libs[0], "path"):
-                addon_prefs.selected_library = asset_libs[0].path
+    # Initialize default library if none selected
+    if (
+        not addon_prefs.selected_library
+        or addon_prefs.selected_library == NONE_LIBRARY_IDENTIFIER
+    ):
+        _initialize_default_library(addon_prefs, preferences)
 
     return addon_prefs
+
+
+def _initialize_default_library(addon_prefs, preferences):
+    """
+    Initialize the default library selection.
+
+    Helper function to set the selected_library to the first available
+    library if no library is currently selected.
+
+    Args:
+        addon_prefs: QuickAssetSaverPreferences instance
+        preferences: Blender preferences object
+    """
+    try:
+        if hasattr(preferences, "filepaths") and hasattr(
+            preferences.filepaths, "asset_libraries"
+        ):
+            asset_libs = preferences.filepaths.asset_libraries
+            if (
+                len(asset_libs) > 0
+                and hasattr(asset_libs[0], "path")
+                and asset_libs[0].path
+            ):
+                addon_prefs.selected_library = asset_libs[0].path
+    except (AttributeError, IndexError, TypeError) as e:
+        print(f"Warning: Could not initialize default library: {e}")
+
+
+class QAS_BundlerProperties(PropertyGroup):
+    """
+    Property group for Quick Asset Bundler settings.
+
+    Stores bundling configuration including:
+    - Output bundle name
+    - Save path for the bundle file
+    - Duplicate handling strategy (overwrite vs increment)
+    - Catalog file copy option
+    """
+
+    output_name: StringProperty(
+        name="Bundle Name",
+        description="Base name for the bundle file (date will be appended automatically)",
+        default="AssetBundle",
+    )
+
+    save_path: StringProperty(
+        name="Save Path",
+        description="Directory where the bundle will be saved",
+        default="",
+        subtype="DIR_PATH",
+    )
+
+    duplicate_mode: EnumProperty(
+        name="Duplicate Handling",
+        description="How to handle duplicate asset types with the same name during bundling",
+        items=[
+            (
+                "OVERWRITE",
+                "Overwrite",
+                "Replace duplicate datablocks with newer versions (avoids duplicate materials/textures/etc.)",
+            ),
+            (
+                "INCREMENT",
+                "Increment",
+                "Rename duplicates with numeric suffix (e.g., Material.001)",
+            ),
+        ],
+        default="OVERWRITE",
+    )
+
+    copy_catalog: BoolProperty(
+        name="Copy Catalog File",
+        description="Copy the asset catalog file alongside the bundle for easy sharing",
+        default=True,
+    )
 
 
 classes = (
     QuickAssetSaverPreferences,
     QASSaveProperties,
+    QAS_BundlerProperties,
 )
 
 
 def register():
+    """
+    Register all property classes and add them to WindowManager.
+
+    Registers:
+    - QuickAssetSaverPreferences (addon preferences)
+    - QASSaveProperties (asset save workflow)
+    - QAS_BundlerProperties (asset bundler settings)
+
+    Also attaches property groups to WindowManager for global access.
+    """
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.types.WindowManager.qas_save_props = bpy.props.PointerProperty(type=QASSaveProperties)
+    bpy.types.WindowManager.qas_save_props = bpy.props.PointerProperty(
+        type=QASSaveProperties
+    )
+    bpy.types.WindowManager.qas_bundler_props = bpy.props.PointerProperty(
+        type=QAS_BundlerProperties
+    )
 
 
 def unregister():
+    """
+    Unregister all property classes and clean up WindowManager.
+
+    Removes property groups from WindowManager and unregisters classes
+    in reverse order to ensure proper cleanup.
+    """
+    if hasattr(bpy.types.WindowManager, "qas_bundler_props"):
+        del bpy.types.WindowManager.qas_bundler_props
     if hasattr(bpy.types.WindowManager, "qas_save_props"):
         del bpy.types.WindowManager.qas_save_props
     for cls in reversed(classes):
