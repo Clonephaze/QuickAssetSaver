@@ -6,7 +6,7 @@ Handles user settings like library path, default author, and options.
 """
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import AddonPreferences, PropertyGroup
 
 # Constants
@@ -178,6 +178,15 @@ class QuickAssetSaverPreferences(AddonPreferences):
         default=False,
     )
 
+    max_bundle_size_mb: IntProperty(
+        name="Max Bundle Size (MB)",
+        description="Maximum total size in megabytes for bundled assets. Used to prevent memory issues when importing many assets",
+        default=4096,  # 4GB default
+        min=512,  # Minimum 512MB
+        soft_max=16384,  # Soft max 16GB
+        subtype="UNSIGNED",
+    )
+
     def draw(self, context):
         """
         Draw the addon preferences UI.
@@ -224,6 +233,10 @@ class QuickAssetSaverPreferences(AddonPreferences):
 
         layout.separator()
         layout.prop(self, "auto_refresh")
+
+        layout.separator()
+        layout.label(text="Asset Bundling:", icon="PACKAGE")
+        layout.prop(self, "max_bundle_size_mb")
 
 
 class QASSaveProperties(PropertyGroup):

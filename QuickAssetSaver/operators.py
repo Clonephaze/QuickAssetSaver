@@ -13,6 +13,8 @@ from pathlib import Path
 import bpy
 from bpy.types import Operator
 
+from .properties import get_addon_preferences
+
 DEBUG_MODE = False
 
 
@@ -600,19 +602,17 @@ class QAS_OT_bundle_assets(Operator):
             )
 
         total_size_mb = self._calculate_total_size(selected_assets)
-        available_ram_mb = self._get_available_ram()
+        preferences = get_addon_preferences()
+        max_bundle_size_mb = preferences.max_bundle_size_mb if preferences else 4096
 
         print(f"Total asset size: {total_size_mb:.1f} MB")
-        print(f"Available RAM: {available_ram_mb:.1f} MB")
+        print(f"Max bundle size: {max_bundle_size_mb} MB")
 
-        estimated_ram_needed = total_size_mb * 2
-
-        if estimated_ram_needed > available_ram_mb * 0.8:
+        if total_size_mb > max_bundle_size_mb:
             self.report(
                 {"ERROR"},
-                f"Insufficient RAM: Operation requires ~{estimated_ram_needed:.0f}MB, "
-                f"but only {available_ram_mb:.0f}MB available. "
-                f"Try selecting fewer assets or closing other applications.",
+                f"Bundle too large: {total_size_mb:.0f}MB exceeds limit of {max_bundle_size_mb}MB. "
+                f"Try selecting fewer assets or increase the limit in addon preferences.",
             )
             return {"CANCELLED"}
 
@@ -732,25 +732,6 @@ class QAS_OT_bundle_assets(Operator):
                 print(f"Unexpected error getting size of {asset_path.name}: {e}")
 
         return total_bytes / (1024 * 1024)  # Convert to MB
-
-    def _get_available_ram(self):
-        """
-        Get available system RAM in megabytes.
-
-        Returns:
-            float: Available RAM in MB, or conservative estimate
-        """
-        try:
-            import psutil
-
-            mem = psutil.virtual_memory()
-            return mem.available / (1024 * 1024)
-        except ImportError:
-            print("Warning: psutil not available. Assuming 8GB RAM available.")
-            return 8192
-        except Exception as e:
-            print(f"Could not determine available RAM: {e}. Assuming 8GB available.")
-            return 8192
 
     def _collect_selected_assets(self, context):
         """
