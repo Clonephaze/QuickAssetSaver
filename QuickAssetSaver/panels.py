@@ -358,33 +358,38 @@ class QAS_PT_asset_bundler(bpy.types.Panel):
                     prefs.filepaths, "asset_libraries"
                 ):
                     # Safely get params with proper null checks
-                    if not context.area or not hasattr(context.area, "spaces"):
-                        pass  # Skip warning if we can't get context
-                    else:
+                    if context.area and hasattr(context.area, "spaces"):
                         active_space = context.area.spaces.active
                         if active_space and hasattr(active_space, "params"):
                             params = active_space.params
                             asset_lib_ref = getattr(params, "asset_library_ref", None)
+                            
+                            # Also try the older API
+                            if not asset_lib_ref and hasattr(params, "asset_library_reference"):
+                                asset_lib_ref = params.asset_library_reference
 
-                            for lib in prefs.filepaths.asset_libraries:
-                                if hasattr(lib, "name") and lib.name == asset_lib_ref:
-                                    try:
-                                        library_path = Path(lib.path)
-                                        if save_path.resolve().is_relative_to(
-                                            library_path.resolve()
-                                        ):
-                                            warning_box = layout.box()
-                                            warning_box.alert = True
-                                            warning_box.label(
-                                                text="⚠ Warning: Saving inside library directory",
-                                                icon="ERROR",
-                                            )
-                                            warning_box.label(
-                                                text="This may cause issues with asset management"
-                                            )
-                                    except (ValueError, OSError):
-                                        # Path comparison failed, skip warning
-                                        pass
+                            if asset_lib_ref:
+                                for lib in prefs.filepaths.asset_libraries:
+                                    if hasattr(lib, "name") and lib.name == asset_lib_ref:
+                                        try:
+                                            library_path = Path(lib.path)
+                                            if save_path.resolve().is_relative_to(
+                                                library_path.resolve()
+                                            ):
+                                                warning_box = layout.box()
+                                                warning_box.alert = True
+                                                warning_box.label(
+                                                    text="Warning: Save location is inside your configured asset library",
+                                                    icon="ERROR",
+                                                )
+                                                warning_box.label(
+                                                    text="This may cause issues with asset management"
+                                                )
+                                        except (ValueError, OSError):
+                                            # Path comparison failed, skip warning
+                                            pass
+                                        # Found the library, no need to continue
+                                        break
 
         if selected_count > LARGE_SELECTION_THRESHOLD:
             layout.separator()
