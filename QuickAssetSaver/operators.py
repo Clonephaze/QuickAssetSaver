@@ -13,7 +13,6 @@ from pathlib import Path
 import bpy
 from bpy.types import Operator
 
-# Debug flag - set to False for production to reduce console output
 DEBUG_MODE = False
 
 
@@ -644,11 +643,36 @@ class QAS_OT_bundle_assets(Operator):
         print(f"Importing {total_assets} asset files...")
 
         wm.progress_begin(0, total_assets)
+        
+        # Track import statistics
+        imported_count = 0
+        skipped_count = 0
+        error_count = 0
 
         try:
             for i, asset_path in enumerate(selected_assets):
                 wm.progress_update(i)
-                self._import_asset_file(asset_path, duplicate_mode)
+                try:
+                    result = self._import_asset_file(asset_path, duplicate_mode)
+                    # _import_asset_file returns None for skipped files
+                    if result is None or result is False:
+                        skipped_count += 1
+                    else:
+                        imported_count += 1
+                except Exception as e:
+                    error_count += 1
+                    print(f"  ✗ Fatal error importing '{asset_path.name}': {e}")
+                    # Continue with remaining files instead of stopping
+                    continue
+            
+            # Print summary
+            print("\nImport Summary:")
+            print(f"  Successfully imported: {imported_count} files")
+            if skipped_count > 0:
+                print(f"  Skipped (incompatible): {skipped_count} files")
+            if error_count > 0:
+                print(f"  Failed with errors: {error_count} files")
+                
         except Exception as e:
             wm.progress_end()
             self.report({"ERROR"}, f"Failed to import assets: {e}")
@@ -670,7 +694,21 @@ class QAS_OT_bundle_assets(Operator):
         if props.copy_catalog:
             self._copy_catalog_file(library_path, target_path, output_name)
 
-        self.report({"INFO"}, f"Bundle saved: {target_path.name}")
+        # Create appropriate success message based on what happened
+        if skipped_count > 0 and imported_count > 0:
+            self.report(
+                {"WARNING"}, 
+                f"Bundle saved: {target_path.name} ({imported_count} imported, {skipped_count} skipped due to version incompatibility)"
+            )
+        elif skipped_count > 0 and imported_count == 0:
+            self.report(
+                {"ERROR"},
+                f"No assets could be imported - all {skipped_count} files are incompatible with this Blender version"
+            )
+            return {"CANCELLED"}
+        else:
+            self.report({"INFO"}, f"Bundle saved: {target_path.name} ({imported_count} assets)")
+        
         return {"FINISHED"}
 
     def _calculate_total_size(self, asset_paths):
@@ -797,14 +835,35 @@ class QAS_OT_bundle_assets(Operator):
             if asset_path:
                 debug_print(f"Checking path: {asset_path}")
 
-                if asset_path.exists() and asset_path.suffix == ".blend":
-                    asset_blend_files.add(asset_path)
-                    debug_print(f"✓ Added asset: {asset_path.name}")
-                else:
-                    if not asset_path.exists():
-                        debug_print(f"✗ Path does not exist: {asset_path}")
-                    elif asset_path.suffix != ".blend":
+                # Validate the path more thoroughly
+                if asset_path.exists():
+                    if asset_path.is_file() and asset_path.suffix.lower() == ".blend":
+                        # Additional validation: check file size
+                        try:
+                            file_size = asset_path.stat().st_size
+                            if file_size > 100:  # Minimum reasonable size for a .blend file
+                                asset_blend_files.add(asset_path)
+                                debug_print(f"✓ Added asset: {asset_path.name} ({file_size} bytes)")
+                            else:
+                                print(f"⚠ Skipping {asset_path.name}: File too small ({file_size} bytes)")
+                        except OSError as e:
+                            print(f"⚠ Cannot access {asset_path.name}: {e}")
+                    elif asset_path.is_dir():
+                        debug_print(f"✗ Is a directory, not a file: {asset_path}")
+                    else:
                         debug_print(f"✗ Not a .blend file: {asset_path.suffix}")
+                else:
+                    debug_print(f"✗ Path does not exist: {asset_path}")
+                    # Try to check if parent directory exists to help diagnose the issue
+                    if asset_path.parent.exists():
+                        debug_print(f"   Parent directory exists: {asset_path.parent}")
+                        # List what's actually in the parent directory
+                        try:
+                            actual_files = list(asset_path.parent.glob("*.blend"))
+                            if actual_files:
+                                debug_print(f"   Found {len(actual_files)} .blend files in parent directory")
+                        except OSError:
+                            pass
 
         selected_assets = list(asset_blend_files)
         debug_print(f"Total unique .blend files found: {len(selected_assets)}")
@@ -877,8 +936,34 @@ class QAS_OT_bundle_assets(Operator):
         Args:
             asset_path: Path object for the source .blend file
             duplicate_mode: 'INCREMENT' or 'OVERWRITE' - controls name conflict resolution
+            
+        Returns:
+            bool: True if successfully imported, False if skipped, None for errors
         """
         print(f"  Importing: {asset_path.name}")
+        
+        # Validate the file before attempting to load
+        if not asset_path.exists():
+            print(f"  ✗ Skipping: File does not exist: {asset_path}")
+            return False
+        
+        if not asset_path.is_file():
+            print(f"  ✗ Skipping: Not a file: {asset_path}")
+            return False
+        
+        if asset_path.suffix.lower() != ".blend":
+            print(f"  ✗ Skipping: Not a .blend file: {asset_path}")
+            return False
+        
+        # Check file size to ensure it's not empty or corrupted
+        try:
+            file_size = asset_path.stat().st_size
+            if file_size < 100:  # .blend files are always at least a few hundred bytes
+                print(f"  ✗ Skipping: File too small ({file_size} bytes), possibly corrupted: {asset_path}")
+                return False
+        except OSError as e:
+            print(f"  ✗ Skipping: Cannot access file: {e}")
+            return False
 
         skip_collections = {
             "workspaces",
@@ -892,33 +977,49 @@ class QAS_OT_bundle_assets(Operator):
             "use_autopack",
         }
 
-        with bpy.data.libraries.load(str(asset_path), link=False) as (
-            data_from,
-            data_to,
-        ):
-            for attr in dir(data_from):
-                if attr.startswith("_") or attr in skip_collections:
-                    continue
+        try:
+            with bpy.data.libraries.load(str(asset_path), link=False) as (
+                data_from,
+                data_to,
+            ):
+                for attr in dir(data_from):
+                    if attr.startswith("_") or attr in skip_collections:
+                        continue
 
-                try:
-                    source_collection = getattr(data_from, attr, None)
-                    if source_collection and len(source_collection) > 0:
-                        items_to_import = []
+                    try:
+                        source_collection = getattr(data_from, attr, None)
+                        if source_collection and len(source_collection) > 0:
+                            items_to_import = []
 
-                        for item_name in source_collection:
-                            if duplicate_mode == "OVERWRITE":
-                                self._remove_existing_datablock(attr, item_name)
+                            for item_name in source_collection:
+                                if duplicate_mode == "OVERWRITE":
+                                    self._remove_existing_datablock(attr, item_name)
 
-                            items_to_import.append(item_name)
+                                items_to_import.append(item_name)
 
-                        if items_to_import:
-                            setattr(data_to, attr, items_to_import)
-                except (AttributeError, TypeError, KeyError) as e:
-                    # Silently skip collections that can't be processed
-                    print(f"Skipping collection '{attr}': {e}")
-                except Exception as e:
-                    # Log unexpected errors but continue processing
-                    print(f"Unexpected error processing collection '{attr}': {e}")
+                            if items_to_import:
+                                setattr(data_to, attr, items_to_import)
+                    except (AttributeError, TypeError, KeyError) as e:
+                        # Silently skip collections that can't be processed
+                        debug_print(f"Skipping collection '{attr}': {e}")
+                    except Exception as e:
+                        # Log unexpected errors but continue processing
+                        print(f"Unexpected error processing collection '{attr}': {e}")
+        except (OSError, IOError, RuntimeError) as e:
+            error_msg = str(e)
+            if "not a blend file" in error_msg.lower() or "failed to read blend file" in error_msg.lower():
+                print(f"  ⚠ Skipping '{asset_path.name}': Incompatible blend file version")
+                print("     (This file may have been created in a newer version of Blender)")
+                # Don't raise - continue with remaining files
+                return False
+            else:
+                # For other errors, re-raise to stop the bundling
+                print(f"  ✗ Error loading blend file '{asset_path.name}': {e}")
+                print(f"     Full path: {asset_path}")
+                raise
+        
+        # If we get here, import was successful
+        return True
 
     def _remove_existing_datablock(self, collection_name, item_name):
         """
