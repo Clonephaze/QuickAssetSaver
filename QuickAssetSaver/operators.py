@@ -271,9 +271,188 @@ def clear_and_set_tags(asset_data, tags_string):
             asset_data.tags.new(tag)
 
 
+def collect_external_dependencies(datablock):
+    """
+    Collect all external file dependencies used by a datablock.
+
+    Recursively traverses materials, node trees, modifiers, and other
+    components to find all datablocks that reference external files
+    and should be packed with the asset.
+
+    Collects:
+    - Images (textures, HDRIs, etc.)
+    - Fonts (used in text objects)
+    - Sounds (audio files)
+    - Movie Clips (video files)
+    - Volumes (OpenVDB files)
+    - Libraries (linked .blend files - noted but not packed)
+
+    Args:
+        datablock: Blender datablock (Object, Material, etc.)
+
+    Returns:
+        dict: Dictionary with keys 'images', 'fonts', 'sounds', 'movieclips', 'volumes'
+              containing sets of respective datablock types
+    """
+    dependencies = {
+        'images': set(),
+        'fonts': set(),
+        'sounds': set(),
+        'movieclips': set(),
+        'volumes': set(),
+    }
+
+    def collect_from_node_tree(node_tree):
+        """Collect dependencies from a node tree."""
+        if not node_tree:
+            return
+        for node in node_tree.nodes:
+            # Image texture nodes
+            if hasattr(node, 'image') and node.image:
+                dependencies['images'].add(node.image)
+            # Movie clip nodes
+            if hasattr(node, 'clip') and node.clip:
+                dependencies['movieclips'].add(node.clip)
+            # IES texture nodes (light profiles stored as images)
+            if node.type == 'TEX_IES' and hasattr(node, 'ies') and node.ies:
+                # IES files are stored differently, but check for image reference
+                pass
+            # Nested node groups
+            if hasattr(node, 'node_tree') and node.node_tree:
+                collect_from_node_tree(node.node_tree)
+
+    def collect_from_material(material):
+        """Collect dependencies from a material."""
+        if not material:
+            return
+        # Node-based materials
+        if material.use_nodes and material.node_tree:
+            collect_from_node_tree(material.node_tree)
+        # Legacy texture slots (for older .blend files)
+        if hasattr(material, 'texture_slots'):
+            for slot in material.texture_slots:
+                if slot and slot.texture:
+                    if hasattr(slot.texture, 'image') and slot.texture.image:
+                        dependencies['images'].add(slot.texture.image)
+
+    def collect_from_object(obj):
+        """Collect dependencies from an object and its modifiers."""
+        if not obj:
+            return
+
+        # Check object data for materials
+        if obj.data:
+            if hasattr(obj.data, 'materials'):
+                for mat in obj.data.materials:
+                    collect_from_material(mat)
+
+            # Text objects use fonts
+            if obj.type == 'FONT' and hasattr(obj.data, 'font'):
+                if obj.data.font:
+                    dependencies['fonts'].add(obj.data.font)
+                # Also check font_bold, font_italic, font_bold_italic
+                for font_attr in ['font_bold', 'font_italic', 'font_bold_italic']:
+                    font = getattr(obj.data, font_attr, None)
+                    if font:
+                        dependencies['fonts'].add(font)
+
+        # Check material slots
+        if hasattr(obj, 'material_slots'):
+            for slot in obj.material_slots:
+                if slot.material:
+                    collect_from_material(slot.material)
+
+        # Check modifiers for external dependencies
+        if hasattr(obj, 'modifiers'):
+            for mod in obj.modifiers:
+                # Volume modifiers (Mesh to Volume, Volume Displace, etc.)
+                if hasattr(mod, 'texture') and mod.texture:
+                    if hasattr(mod.texture, 'image') and mod.texture.image:
+                        dependencies['images'].add(mod.texture.image)
+                
+                # Ocean modifier bake files (image sequences)
+                if mod.type == 'OCEAN' and hasattr(mod, 'filepath') and mod.filepath:
+                    # Ocean bakes are cached files, not typically packed
+                    pass
+
+        # Check geometry nodes for volumes/images
+        if hasattr(obj, 'modifiers'):
+            for mod in obj.modifiers:
+                if mod.type == 'NODES' and hasattr(mod, 'node_group') and mod.node_group:
+                    collect_from_node_tree(mod.node_group)
+
+    # Handle different datablock types
+    if hasattr(datablock, 'type'):  # It's likely an Object
+        collect_from_object(datablock)
+    elif hasattr(datablock, 'data') and datablock.data:
+        # Object wrapper - check the data
+        obj_data = datablock.data
+        if hasattr(obj_data, 'materials'):
+            for mat in obj_data.materials:
+                collect_from_material(mat)
+
+    # Check materials directly on the datablock
+    if hasattr(datablock, 'materials'):
+        for mat in datablock.materials:
+            collect_from_material(mat)
+
+    # Check material slots for objects
+    if hasattr(datablock, 'material_slots'):
+        for slot in datablock.material_slots:
+            if slot.material:
+                collect_from_material(slot.material)
+
+    # If datablock is a material itself
+    if isinstance(datablock, bpy.types.Material):
+        collect_from_material(datablock)
+
+    # If datablock is a node tree (geometry nodes, compositor, etc.)
+    if isinstance(datablock, bpy.types.NodeTree):
+        collect_from_node_tree(datablock)
+
+    # If datablock is a world
+    if isinstance(datablock, bpy.types.World):
+        if datablock.use_nodes and datablock.node_tree:
+            collect_from_node_tree(datablock.node_tree)
+
+    # If datablock is a light
+    if isinstance(datablock, bpy.types.Light):
+        if datablock.use_nodes and hasattr(datablock, 'node_tree') and datablock.node_tree:
+            collect_from_node_tree(datablock.node_tree)
+
+    # If datablock is a scene (check world, compositor nodes)
+    if isinstance(datablock, bpy.types.Scene):
+        if datablock.world:
+            if datablock.world.use_nodes and datablock.world.node_tree:
+                collect_from_node_tree(datablock.world.node_tree)
+        if datablock.use_nodes and datablock.node_tree:
+            collect_from_node_tree(datablock.node_tree)
+        # Check sequence editor for sounds/movies
+        if hasattr(datablock, 'sequence_editor') and datablock.sequence_editor:
+            for seq in datablock.sequence_editor.sequences_all:
+                if hasattr(seq, 'sound') and seq.sound:
+                    dependencies['sounds'].add(seq.sound)
+                if hasattr(seq, 'clip') and seq.clip:
+                    dependencies['movieclips'].add(seq.clip)
+
+    # If datablock is a speaker (uses sounds)
+    if isinstance(datablock, bpy.types.Speaker):
+        if datablock.sound:
+            dependencies['sounds'].add(datablock.sound)
+
+    # If datablock is a Volume (OpenVDB)
+    if hasattr(bpy.types, 'Volume') and isinstance(datablock, bpy.types.Volume):
+        dependencies['volumes'].add(datablock)
+
+    return dependencies
+
+
 def write_blend_file(filepath, datablocks):
     """
     Write a .blend file containing only the specified datablocks.
+
+    Automatically packs all external dependencies (images, fonts, sounds, etc.)
+    used by the datablocks to ensure the asset is self-contained.
 
     Args:
         filepath: Path to the destination .blend file
@@ -283,10 +462,81 @@ def write_blend_file(filepath, datablocks):
         bool: True if successful, False otherwise
     """
     temp_file = None
+    # Track what we packed so we can restore state after saving
+    packed_items = {
+        'images': [],
+        'fonts': [],
+        'sounds': [],
+        'movieclips': [],
+        'volumes': [],
+    }
+
     try:
         filepath = Path(filepath)
         temp_dir = filepath.parent
         temp_file = temp_dir / f".tmp_{filepath.name}"
+
+        # Collect all external dependencies from the datablocks
+        all_dependencies = {
+            'images': set(),
+            'fonts': set(),
+            'sounds': set(),
+            'movieclips': set(),
+            'volumes': set(),
+        }
+        
+        for datablock in datablocks:
+            deps = collect_external_dependencies(datablock)
+            for key in all_dependencies:
+                all_dependencies[key].update(deps[key])
+
+        # Pack images that have external sources
+        for image in all_dependencies['images']:
+            if image and image.source == 'FILE' and not image.packed_file:
+                try:
+                    packed_items['images'].append(image)
+                    image.pack()
+                    debug_print(f"Packed image: {image.name}")
+                except Exception as e:
+                    print(f"Warning: Could not pack image '{image.name}': {e}")
+
+        # Pack fonts that have external sources
+        for font in all_dependencies['fonts']:
+            if font and not font.packed_file:
+                # Skip built-in font "Bfont"
+                if font.filepath and font.filepath != '<builtin>':
+                    try:
+                        packed_items['fonts'].append(font)
+                        font.pack()
+                        debug_print(f"Packed font: {font.name}")
+                    except Exception as e:
+                        print(f"Warning: Could not pack font '{font.name}': {e}")
+
+        # Pack sounds that have external sources
+        for sound in all_dependencies['sounds']:
+            if sound and not sound.packed_file:
+                try:
+                    packed_items['sounds'].append(sound)
+                    sound.pack()
+                    debug_print(f"Packed sound: {sound.name}")
+                except Exception as e:
+                    print(f"Warning: Could not pack sound '{sound.name}': {e}")
+
+        # Pack movie clips (if supported)
+        for clip in all_dependencies['movieclips']:
+            if clip and hasattr(clip, 'packed_file') and not clip.packed_file:
+                try:
+                    packed_items['movieclips'].append(clip)
+                    clip.pack()
+                    debug_print(f"Packed movie clip: {clip.name}")
+                except Exception as e:
+                    print(f"Warning: Could not pack movie clip '{clip.name}': {e}")
+
+        # Note: Volumes (OpenVDB) cannot be packed in Blender, just log a warning
+        for volume in all_dependencies['volumes']:
+            if volume and hasattr(volume, 'filepath') and volume.filepath:
+                print(f"Warning: Volume '{volume.name}' has external file '{volume.filepath}' which cannot be packed. "
+                      "Consider placing the VDB file in a location accessible from the asset library.")
 
         bpy.data.libraries.write(
             str(temp_file),
@@ -296,6 +546,35 @@ def write_blend_file(filepath, datablocks):
             compress=True,
         )
 
+        # Restore unpacked state for all items in current session
+        for image in packed_items['images']:
+            try:
+                if image.packed_file:
+                    image.unpack(method='USE_ORIGINAL')
+            except Exception as e:
+                debug_print(f"Could not restore image '{image.name}': {e}")
+
+        for font in packed_items['fonts']:
+            try:
+                if font.packed_file:
+                    font.unpack(method='USE_ORIGINAL')
+            except Exception as e:
+                debug_print(f"Could not restore font '{font.name}': {e}")
+
+        for sound in packed_items['sounds']:
+            try:
+                if sound.packed_file:
+                    sound.unpack(method='USE_ORIGINAL')
+            except Exception as e:
+                debug_print(f"Could not restore sound '{sound.name}': {e}")
+
+        for clip in packed_items['movieclips']:
+            try:
+                if hasattr(clip, 'packed_file') and clip.packed_file:
+                    clip.unpack(method='USE_ORIGINAL')
+            except Exception as e:
+                debug_print(f"Could not restore movie clip '{clip.name}': {e}")
+
         if filepath.exists():
             filepath.unlink()
 
@@ -304,6 +583,8 @@ def write_blend_file(filepath, datablocks):
 
     except (OSError, IOError) as e:
         print(f"Error writing blend file: {e}")
+        # Restore all packed items on error
+        _restore_packed_items(packed_items)
         if temp_file and temp_file.exists():
             try:
                 temp_file.unlink()
@@ -312,12 +593,42 @@ def write_blend_file(filepath, datablocks):
         return False
     except Exception as e:
         print(f"Unexpected error writing blend file: {e}")
+        # Restore all packed items on error
+        _restore_packed_items(packed_items)
         if temp_file and temp_file.exists():
             try:
                 temp_file.unlink()
             except OSError as cleanup_error:
                 print(f"Failed to clean up temp file: {cleanup_error}")
         return False
+
+
+def _restore_packed_items(packed_items):
+    """Helper to restore unpacked state for all temporarily packed items."""
+    for image in packed_items.get('images', []):
+        try:
+            if image.packed_file:
+                image.unpack(method='USE_ORIGINAL')
+        except Exception:
+            pass
+    for font in packed_items.get('fonts', []):
+        try:
+            if font.packed_file:
+                font.unpack(method='USE_ORIGINAL')
+        except Exception:
+            pass
+    for sound in packed_items.get('sounds', []):
+        try:
+            if sound.packed_file:
+                sound.unpack(method='USE_ORIGINAL')
+        except Exception:
+            pass
+    for clip in packed_items.get('movieclips', []):
+        try:
+            if hasattr(clip, 'packed_file') and clip.packed_file:
+                clip.unpack(method='USE_ORIGINAL')
+        except Exception:
+            pass
 
 
 class QAS_OT_open_library_folder(Operator):
@@ -335,6 +646,8 @@ class QAS_OT_open_library_folder(Operator):
         Returns:
             set: {'FINISHED'} if successful, {'CANCELLED'} otherwise
         """
+        from .properties import get_library_path_by_name
+
         wm = context.window_manager
         props = wm.qas_save_props
 
@@ -342,7 +655,13 @@ class QAS_OT_open_library_folder(Operator):
             self.report({"ERROR"}, "No asset library selected")
             return {"CANCELLED"}
 
-        library_path = Path(props.selected_library)
+        # Get the actual path from library name
+        library_path_str = get_library_path_by_name(props.selected_library)
+        if not library_path_str:
+            self.report({"ERROR"}, f"Could not find library: {props.selected_library}")
+            return {"CANCELLED"}
+
+        library_path = Path(library_path_str)
         if not library_path.exists():
             self.report({"ERROR"}, "Library path does not exist")
             return {"CANCELLED"}
@@ -362,6 +681,7 @@ class QAS_OT_save_asset_to_library_direct(Operator):
     def execute(self, context):
         """Execute the save operation directly using panel properties."""
         from . import properties
+        from .properties import get_library_path_by_name
 
         # Get preferences and properties
         prefs = properties.get_addon_preferences(context)
@@ -373,7 +693,13 @@ class QAS_OT_save_asset_to_library_direct(Operator):
             self.report({"ERROR"}, "No asset library selected")
             return {"CANCELLED"}
 
-        library_path = Path(props.selected_library)
+        # Get the actual path from library name
+        library_path_str = get_library_path_by_name(props.selected_library)
+        if not library_path_str:
+            self.report({"ERROR"}, f"Could not find library: {props.selected_library}")
+            return {"CANCELLED"}
+
+        library_path = Path(library_path_str)
         if not library_path.exists():
             self.report({"ERROR"}, f"Library path does not exist: {library_path}")
             return {"CANCELLED"}
@@ -388,7 +714,7 @@ class QAS_OT_save_asset_to_library_direct(Operator):
         ):
             # Get the catalog path from UUID
             catalog_path = get_catalog_path_from_uuid(
-                props.selected_library, props.catalog
+                library_path_str, props.catalog
             )
 
             if catalog_path:

@@ -14,12 +14,37 @@ MAX_FILENAME_AFFIX_LENGTH = 32  # Maximum length for prefix/suffix
 NONE_LIBRARY_IDENTIFIER = "NONE"  # Identifier for "no library selected"
 
 
+def get_library_path_by_name(library_name):
+    """
+    Get the library path for a given library name.
+
+    Args:
+        library_name: Name of the asset library
+
+    Returns:
+        str: Library path or None if not found
+    """
+    if not library_name or library_name == NONE_LIBRARY_IDENTIFIER:
+        return None
+
+    prefs = bpy.context.preferences
+    if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
+        for lib in prefs.filepaths.asset_libraries:
+            if hasattr(lib, "name") and lib.name == library_name:
+                return lib.path
+    return None
+
+
 def build_library_enum_items():
     """
     Build enum items for asset library selection.
 
     Retrieves user-configured asset libraries from Blender preferences
     and formats them as enum items for property dropdowns.
+
+    Note:
+        Uses library name as identifier to avoid Unicode encoding issues
+        with paths containing non-ASCII characters (e.g., Chinese, Japanese).
 
     Returns:
         list: List of tuples in format (identifier, name, description, icon, index)
@@ -32,9 +57,11 @@ def build_library_enum_items():
         asset_libs = prefs.filepaths.asset_libraries
         for idx, lib in enumerate(asset_libs):
             if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
+                # Use library name as identifier to avoid Unicode issues with paths
+                # The path can be retrieved via get_library_path_by_name() when needed
                 items.append(
                     (
-                        lib.path,
+                        lib.name,
                         lib.name,
                         f"Save to: {lib.path}",
                         "ASSET_MANAGER",
@@ -211,8 +238,11 @@ class QuickAssetSaverPreferences(AddonPreferences):
         )
 
         if self.selected_library and self.selected_library != NONE_LIBRARY_IDENTIFIER:
-            row = layout.row()
-            row.label(text=f"Path: {self.selected_library}", icon="FILE_FOLDER")
+            # Get the actual path from library name
+            library_path = get_library_path_by_name(self.selected_library)
+            if library_path:
+                row = layout.row()
+                row.label(text=f"Path: {library_path}", icon="FILE_FOLDER")
 
         layout.separator()
         layout.label(text="Organization:")
@@ -275,11 +305,16 @@ class QASSaveProperties(PropertyGroup):
             print(f"Warning: Could not import get_catalogs_from_cdf: {e}")
             return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
-        library_path = (
+        # Get the actual library path from the library name
+        library_name = (
             self.selected_library
             if self.selected_library != NONE_LIBRARY_IDENTIFIER
             else None
         )
+        if not library_name:
+            return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+
+        library_path = get_library_path_by_name(library_name)
         if not library_path:
             return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
@@ -419,10 +454,11 @@ def _initialize_default_library(addon_prefs, preferences):
             asset_libs = preferences.filepaths.asset_libraries
             if (
                 len(asset_libs) > 0
-                and hasattr(asset_libs[0], "path")
-                and asset_libs[0].path
+                and hasattr(asset_libs[0], "name")
+                and asset_libs[0].name
             ):
-                addon_prefs.selected_library = asset_libs[0].path
+                # Use library name instead of path to avoid Unicode issues
+                addon_prefs.selected_library = asset_libs[0].name
     except (AttributeError, IndexError, TypeError) as e:
         print(f"Warning: Could not initialize default library: {e}")
 
