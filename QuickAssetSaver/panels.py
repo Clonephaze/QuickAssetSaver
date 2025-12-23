@@ -100,6 +100,7 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
         layout = self.layout
 
         from . import properties
+        from .properties import get_library_path_by_name
         from .operators import sanitize_name
 
         prefs = properties.get_addon_preferences(context)
@@ -113,9 +114,12 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
             text="Add other libraries in the File Paths tab in Blender Preferences."
         )
 
-        if props.selected_library and props.selected_library != "NONE":
+        # Get the actual path from library name for display
+        library_path_str = get_library_path_by_name(props.selected_library) if props.selected_library and props.selected_library != "NONE" else None
+
+        if library_path_str:
             row = box.row()
-            row.label(text=f"Path: {props.selected_library}", icon="FILE_FOLDER")
+            row.label(text=f"Path: {library_path_str}", icon="FILE_FOLDER")
             row.operator("qas.open_library_folder", text="", icon="FILEBROWSER")
 
         layout.separator()
@@ -155,6 +159,7 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
                 props.selected_library
                 and props.selected_library != "NONE"
                 and props.asset_file_name
+                and library_path_str
             ):
                 from pathlib import Path
                 from .operators import get_catalog_path_from_uuid, build_asset_filename
@@ -164,7 +169,7 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
 
                 # Build the preview path with validation to handle invalid inputs gracefully
                 try:
-                    library_path = Path(props.selected_library)
+                    library_path = Path(library_path_str)
                     target_path = library_path
 
                     # Add catalog subfolder if enabled
@@ -174,7 +179,7 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
                         and props.catalog != "UNASSIGNED"
                     ):
                         catalog_path = get_catalog_path_from_uuid(
-                            props.selected_library, props.catalog
+                            library_path_str, props.catalog
                         )
                         if catalog_path:
                             path_parts = catalog_path.split("/")
