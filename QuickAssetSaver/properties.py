@@ -14,6 +14,10 @@ MAX_FILENAME_AFFIX_LENGTH = 32  # Maximum length for prefix/suffix
 NONE_LIBRARY_IDENTIFIER = "NONE"  # Identifier for "no library selected"
 DEBUG_MODE = False  # Set to True for debug output
 
+# Cache for enum items to prevent garbage collection
+# Blender's EnumProperty callbacks can have strings GC'd before display
+_LIBRARY_ENUM_CACHE = []
+
 
 def debug_print(*args, **kwargs):
     """Print debug messages only when DEBUG_MODE is enabled."""
@@ -92,14 +96,19 @@ def build_library_enum_items():
 
     Note:
         Uses ASCII-safe identifiers (LIB_0, LIB_1, etc.) to avoid Unicode
-        encoding issues. For display names, uses the library name if ASCII-safe,
-        otherwise falls back to showing the folder name from the path.
-        Blender's EnumProperty dropdown cannot render non-ASCII characters.
+        encoding issues in the identifier field.
+        Display names (labels) CAN contain Unicode - Chinese, etc. is fine.
+        Only the identifier must be ASCII-safe.
+        
+        Items are cached in _LIBRARY_ENUM_CACHE to prevent garbage collection
+        before Blender can display them (known Blender API issue).
 
     Returns:
         list: List of tuples in format (identifier, name, description, icon, index)
               Returns error item if no libraries are configured
     """
+    global _LIBRARY_ENUM_CACHE
+    
     items = []
     try:
         prefs = bpy.context.preferences
@@ -109,31 +118,44 @@ def build_library_enum_items():
             for idx, lib in enumerate(asset_libs):
                 try:
                     if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
-                        lib_name = str(lib.name) if lib.name else f"Library_{idx}"
-                        lib_path = str(lib.path) if lib.path else "<unknown>"
-                        
-                        # Check if library name is ASCII-safe for enum display
-                        # Blender's EnumProperty dropdown cannot render non-ASCII characters
+                        # Get library name - ensure proper Unicode string
+                        # Using encode/decode to normalize the string
                         try:
-                            lib_name.encode('ascii')
-                            display_name = lib_name
-                        except UnicodeEncodeError:
-                            # Name contains non-ASCII chars, use folder name from path instead
-                            from pathlib import Path
-                            try:
-                                folder_name = Path(lib_path).name
-                                # Check if folder name is also ASCII-safe
-                                folder_name.encode('ascii')
-                                display_name = f"{folder_name} (Library {idx + 1})"
-                            except (UnicodeEncodeError, OSError):
-                                # Folder name also has non-ASCII, use generic name
-                                display_name = f"Library {idx + 1}"
+                            lib_name = lib.name
+                            if lib_name:
+                                # Normalize Unicode string
+                                lib_name = lib_name.encode('utf-8').decode('utf-8')
+                            else:
+                                lib_name = f"Library {idx + 1}"
+                        except (UnicodeDecodeError, UnicodeEncodeError):
+                            lib_name = f"Library {idx + 1}"
                         
-                        # Use ASCII-safe identifier and display name
+                        try:
+                            lib_path = lib.path
+                            if lib_path:
+                                lib_path = lib_path.encode('utf-8').decode('utf-8')
+                            else:
+                                lib_path = "<unknown>"
+                        except (UnicodeDecodeError, UnicodeEncodeError):
+                            lib_path = "<unknown>"
+                        
+                        # Use the actual library name as display name
+                        # EnumProperty labels fully support Unicode (Chinese, etc.)
+                        # Only the identifier needs to be ASCII-safe
+                        display_name = lib_name
+                        
+                        # Debug: print what we're adding
+                        debug_print(f"[QAS Enum Debug] Adding library {idx}:")
+                        debug_print(f"  - identifier: LIB_{idx}")
+                        debug_print(f"  - display_name: {display_name}")
+                        debug_print(f"  - display_name type: {type(display_name)}")
+                        debug_print(f"  - display_name repr: {repr(display_name)}")
+                        debug_print(f"  - lib_path: {lib_path}")
+                        
                         items.append(
                             (
-                                f"LIB_{idx}",      # ASCII-safe identifier
-                                display_name,      # ASCII-safe display name for dropdown
+                                f"LIB_{idx}",      # ASCII-safe identifier (required)
+                                display_name,      # Display name - Unicode OK!
                                 f"Save to: {lib_path}",  # Full path in tooltip
                                 "ASSET_MANAGER",
                                 idx,
@@ -156,7 +178,12 @@ def build_library_enum_items():
             )
         )
 
-    return items
+    # Debug: print final cache
+    debug_print(f"[QAS Enum Debug] Final cached items: {_LIBRARY_ENUM_CACHE}")
+    
+    # Cache items to prevent garbage collection before Blender displays them
+    _LIBRARY_ENUM_CACHE = items
+    return _LIBRARY_ENUM_CACHE
 
 
 def validate_string_length(value, max_length, property_name):
