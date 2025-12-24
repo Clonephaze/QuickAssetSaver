@@ -7,14 +7,14 @@ Provides a side panel for saving assets to libraries.
 
 import bpy
 
+from .properties import DEBUG_MODE
+
 # UI Constants
 MAX_PATH_DISPLAY_LENGTH = 40  # Characters before splitting path display
 LARGE_SELECTION_THRESHOLD = 10  # Show warning when selecting more than this many assets
 
 # Excluded library references (built-in libraries)
 EXCLUDED_LIBRARY_REFS = ["LOCAL", "CURRENT", "ALL", "ESSENTIALS"]
-
-DEBUG_MODE = False  # Set to True to enable debug prints
 
 def debug_print(*args, **kwargs):
     """Print debug messages only when DEBUG_MODE is enabled."""
@@ -470,9 +470,87 @@ class QAS_PT_asset_bundler(bpy.types.Panel):
             col.label(text="Consider leaving a rating!")
 
 
+class QAS_PT_asset_manage(bpy.types.Panel):
+    """Panel for managing assets inside user libraries (move/delete/catalog)."""
+
+    bl_label = "Asset Management"
+    bl_idname = "QAS_PT_asset_manage"
+    bl_space_type = "FILE_BROWSER"
+    bl_region_type = "TOOLS"
+    bl_category = "Assets"
+
+    @classmethod
+    def poll(cls, context):
+        space = context.space_data
+        if not space or space.type != "FILE_BROWSER":
+            return False
+        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
+            return False
+
+        params = space.params
+        if not hasattr(params, "asset_library_reference"):
+            return False
+
+        # Visible when browsing a user-configured library (not LOCAL/CURRENT/ALL/ESSENTIALS)
+        asset_lib_ref = params.asset_library_reference
+        if not is_user_library(context, asset_lib_ref):
+            return False
+
+        if hasattr(params, "asset_library_ref"):
+            newer_ref = params.asset_library_ref
+            if not is_user_library(context, newer_ref):
+                return False
+
+        return True
+
+    def draw(self, context):
+        layout = self.layout
+        wm = context.window_manager
+        manage = getattr(wm, "qas_manage_props", None)
+
+        # Selection count (for enabling/disabling buttons)
+        selected_count = 0
+        if hasattr(context, "selected_asset_files") and context.selected_asset_files is not None:
+            selected_count = len(context.selected_asset_files)
+        elif hasattr(context, "selected_assets") and context.selected_assets is not None:
+            selected_count = len(context.selected_assets)
+        elif hasattr(context.space_data, "files"):
+            try:
+                selected_count = len([f for f in context.space_data.files if getattr(f, "select", False)])
+            except (AttributeError, TypeError, RuntimeError):
+                selected_count = 0
+
+        # Target library + catalog
+        if manage:
+            row = layout.row()
+            row.prop(manage, "move_target_library", text="Target Library")
+            row = layout.row()
+            row.prop(manage, "move_target_catalog", text="Target Catalog")
+            row = layout.row()
+            row.prop(manage, "move_conflict_resolution", text="If Exists")
+
+        layout.separator()
+
+        # Move to target library and assign catalog (single consolidated action)
+        move_row = layout.row()
+        move_row.scale_y = 1.2
+        move_row.enabled = selected_count > 0
+        move_row.operator("qas.move_selected_to_library", text="Move Assets", icon="EXPORT")
+
+        layout.separator()
+
+        # Delete selected assets permanently
+        del_row = layout.row()
+        del_row.enabled = selected_count > 0
+        del_row.operator("qas.delete_selected_assets", text="Delete Selected", icon="TRASH")
+
+
 classes = (
     QAS_PT_asset_tools_panel,
     QAS_PT_asset_bundler,
+    QAS_PT_asset_manage,
+    # New management panel for user libraries
+    
 )
 
 
