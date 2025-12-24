@@ -12,6 +12,13 @@ from bpy.types import AddonPreferences, PropertyGroup
 # Constants
 MAX_FILENAME_AFFIX_LENGTH = 32  # Maximum length for prefix/suffix
 NONE_LIBRARY_IDENTIFIER = "NONE"  # Identifier for "no library selected"
+DEBUG_MODE = False  # Set to True for debug output
+
+
+def debug_print(*args, **kwargs):
+    """Print debug messages only when DEBUG_MODE is enabled."""
+    if DEBUG_MODE:
+        print(*args, **kwargs)
 
 
 def get_library_path_by_name(library_name):
@@ -45,29 +52,41 @@ def build_library_enum_items():
     Note:
         Uses library name as identifier to avoid Unicode encoding issues
         with paths containing non-ASCII characters (e.g., Chinese, Japanese).
+        Handles errors gracefully to prevent crashes with problematic paths.
 
     Returns:
         list: List of tuples in format (identifier, name, description, icon, index)
               Returns error item if no libraries are configured
     """
     items = []
-    prefs = bpy.context.preferences
+    try:
+        prefs = bpy.context.preferences
 
-    if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
-        asset_libs = prefs.filepaths.asset_libraries
-        for idx, lib in enumerate(asset_libs):
-            if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
-                # Use library name as identifier to avoid Unicode issues with paths
-                # The path can be retrieved via get_library_path_by_name() when needed
-                items.append(
-                    (
-                        lib.name,
-                        lib.name,
-                        f"Save to: {lib.path}",
-                        "ASSET_MANAGER",
-                        idx,
-                    )
-                )
+        if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
+            asset_libs = prefs.filepaths.asset_libraries
+            for idx, lib in enumerate(asset_libs):
+                try:
+                    if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
+                        # Safely encode the description to avoid Unicode issues
+                        lib_name = str(lib.name) if lib.name else f"Library_{idx}"
+                        lib_path = str(lib.path) if lib.path else "<unknown>"
+                        
+                        # Use library name as identifier to avoid Unicode issues with paths
+                        # The path can be retrieved via get_library_path_by_name() when needed
+                        items.append(
+                            (
+                                lib_name,
+                                lib_name,
+                                f"Save to: {lib_path}",
+                                "ASSET_MANAGER",
+                                idx,
+                            )
+                        )
+                except (AttributeError, UnicodeDecodeError, TypeError) as e:
+                    debug_print(f"Error processing library {idx}: {e}")
+                    continue
+    except Exception as e:
+        print(f"Error building library enum items: {e}")
 
     if not items:
         items.append(
@@ -290,6 +309,7 @@ class QASSaveProperties(PropertyGroup):
 
         Reads the blender_assets.cats.txt file from the selected library
         and returns catalog options for the enum property.
+        Handles errors gracefully to prevent UI crashes.
 
         Args:
             context: Blender context
@@ -302,31 +322,34 @@ class QASSaveProperties(PropertyGroup):
             from .operators import get_catalogs_from_cdf
         except ImportError as e:
             # If import fails, return default
-            print(f"Warning: Could not import get_catalogs_from_cdf: {e}")
-            return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
-
-        # Get the actual library path from the library name
-        library_name = (
-            self.selected_library
-            if self.selected_library != NONE_LIBRARY_IDENTIFIER
-            else None
-        )
-        if not library_name:
-            return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
-
-        library_path = get_library_path_by_name(library_name)
-        if not library_path:
+            debug_print(f"Warning: Could not import get_catalogs_from_cdf: {e}")
             return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
         try:
+            # Get the actual library path from the library name
+            library_name = (
+                self.selected_library
+                if self.selected_library != NONE_LIBRARY_IDENTIFIER
+                else None
+            )
+            if not library_name:
+                return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+
+            library_path = get_library_path_by_name(library_name)
+            if not library_path:
+                return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+
             catalogs, enum_items = get_catalogs_from_cdf(library_path)
             return (
                 enum_items
                 if enum_items
                 else [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
             )
+        except (UnicodeDecodeError, UnicodeEncodeError) as e:
+            debug_print(f"Unicode error loading catalogs: {e}")
+            return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
         except Exception as e:
-            print(f"Error loading catalogs from {library_path}: {e}")
+            debug_print(f"Error loading catalogs: {e}")
             return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
     selected_library: EnumProperty(
@@ -403,12 +426,69 @@ class QASSaveProperties(PropertyGroup):
     )
 
 
+def _migrate_old_library_format(addon_prefs, preferences):
+    """
+    Migrate old path-based library settings to new name-based format.
+
+    Old versions stored library paths directly in selected_library.
+    New versions store library names to avoid Unicode issues.
+    This function detects and converts old format to new format.
+
+    Args:
+        addon_prefs: QuickAssetSaverPreferences instance
+        preferences: Blender preferences object
+    """
+    try:
+        current_value = addon_prefs.selected_library
+        
+        # Check if current value looks like a path (contains / or \ or is very long)
+        # and not a built-in identifier
+        if current_value and current_value not in (NONE_LIBRARY_IDENTIFIER, "LOCAL", "CURRENT", "ALL", "ESSENTIALS"):
+            # Try to detect if it's a path vs a library name
+            is_path = (
+                "/" in current_value or 
+                "\\" in current_value or 
+                len(current_value) > 64 or
+                current_value.endswith(".blend")
+            )
+            
+            if is_path:
+                # It's likely an old path-based value, try to find matching library by path
+                if hasattr(preferences, "filepaths") and hasattr(
+                    preferences.filepaths, "asset_libraries"
+                ):
+                    for lib in preferences.filepaths.asset_libraries:
+                        try:
+                            # Compare paths, handling Unicode properly
+                            if hasattr(lib, "path") and lib.path:
+                                # Normalize paths for comparison
+                                from pathlib import Path
+                                old_path = Path(current_value).resolve()
+                                lib_path = Path(lib.path).resolve()
+                                if old_path == lib_path and hasattr(lib, "name"):
+                                    # Found matching library, migrate to name-based format
+                                    addon_prefs.selected_library = lib.name
+                                    print(f"Migrated library setting from path to name: {lib.name}")
+                                    return
+                        except (OSError, ValueError, TypeError) as e:
+                            debug_print(f"Migration path comparison error: {e}")
+                            continue
+                
+                # If we couldn't migrate by path matching, use default
+                print("Warning: Could not migrate old library path format. Using default library.")
+                _initialize_default_library(addon_prefs, preferences)
+    except Exception as e:
+        print(f"Warning during library format migration: {e}")
+        # Continue anyway - we'll use default library
+
+
 def get_addon_preferences(context=None):
     """
     Get the addon preferences instance.
 
     Retrieves the Quick Asset Saver addon preferences from Blender's
     addon system. Automatically initializes default library if none selected.
+    Handles migration from old path-based format to new name-based format.
 
     Args:
         context: Blender context (optional, uses bpy.context if None)
@@ -425,6 +505,9 @@ def get_addon_preferences(context=None):
 
     preferences = context.preferences
     addon_prefs = preferences.addons[__package__].preferences
+
+    # Try to migrate old format if needed
+    _migrate_old_library_format(addon_prefs, preferences)
 
     # Initialize default library if none selected
     if (
