@@ -1,6 +1,6 @@
 schema_version = "1.0.0"
 id = "Quick_Asset_Saver"
-version = "1.2.3"
+version = "1.2.4"
 name = "Quick Asset Saver"
 tagline = "Streamline saving assets to your local asset libraries"
 maintainer = "Clonephaze"

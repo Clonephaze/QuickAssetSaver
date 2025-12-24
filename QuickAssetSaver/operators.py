@@ -15,7 +15,11 @@ from bpy.types import Operator
 
 from .properties import get_addon_preferences
 
-DEBUG_MODE = False
+DEBUG_MODE = True
+
+# Cache for catalog enum items to prevent garbage collection
+# Blender's EnumProperty callbacks can have strings GC'd before display
+_CATALOG_ENUM_CACHE = []
 
 
 def debug_print(*args, **kwargs):
@@ -181,7 +185,13 @@ def get_catalogs_from_cdf(library_path):
     Returns:
         dict: Mapping of catalog paths to UUIDs, e.g., {"Materials/Metal": "uuid-string"}
         list: List of tuples for EnumProperty items: (identifier, name, description)
+        
+    Note:
+        Items are cached in _CATALOG_ENUM_CACHE to prevent garbage collection
+        before Blender can display them (known Blender API issue).
     """
+    global _CATALOG_ENUM_CACHE
+    
     library_path = Path(library_path)
     cdf_path = library_path / "blender_assets.cats.txt"
 
@@ -190,7 +200,8 @@ def get_catalogs_from_cdf(library_path):
 
     if not cdf_path.exists():
         debug_print(f"No catalog file found at {cdf_path}")
-        return catalogs, enum_items
+        _CATALOG_ENUM_CACHE = enum_items
+        return catalogs, _CATALOG_ENUM_CACHE
 
     try:
         with open(cdf_path, "r", encoding="utf-8") as f:
@@ -218,12 +229,24 @@ def get_catalogs_from_cdf(library_path):
                 try:
                     uuid.UUID(catalog_uuid)
                     catalogs[catalog_path] = catalog_uuid
-                    # Create enum item
+                    
+                    # Normalize Unicode string for display name
+                    try:
+                        display_name = catalog_path.encode('utf-8').decode('utf-8')
+                    except (UnicodeDecodeError, UnicodeEncodeError):
+                        display_name = f"Catalog {idx}"
+                    
+                    debug_print(f"[QAS Catalog Debug] Adding catalog {idx}:")
+                    debug_print(f"  - uuid: {catalog_uuid}")
+                    debug_print(f"  - display_name: {display_name}")
+                    debug_print(f"  - display_name repr: {repr(display_name)}")
+                    
+                    # Create enum item with UUID as identifier (ASCII-safe)
                     enum_items.append(
                         (
-                            catalog_uuid,
-                            catalog_path,
-                            f"Catalog: {catalog_path}",
+                            catalog_uuid,           # UUID is ASCII-safe identifier
+                            display_name,           # Display name - Unicode OK!
+                            f"Catalog: {display_name}",
                             "ASSET_MANAGER",
                             idx,
                         )
@@ -242,7 +265,11 @@ def get_catalogs_from_cdf(library_path):
     except UnicodeDecodeError as e:
         print(f"Encoding error reading catalog file {cdf_path}: {e}")
 
-    return catalogs, enum_items
+    # Cache items to prevent garbage collection before Blender displays them
+    _CATALOG_ENUM_CACHE = enum_items
+    debug_print(f"[QAS Catalog Debug] Cached {len(_CATALOG_ENUM_CACHE)} catalog items")
+    
+    return catalogs, _CATALOG_ENUM_CACHE
 
 
 def clear_and_set_tags(asset_data, tags_string):
