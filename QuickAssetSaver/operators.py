@@ -646,7 +646,7 @@ class QAS_OT_open_library_folder(Operator):
         Returns:
             set: {'FINISHED'} if successful, {'CANCELLED'} otherwise
         """
-        from .properties import get_library_path_by_name
+        from .properties import get_library_by_identifier
 
         wm = context.window_manager
         props = wm.qas_save_props
@@ -655,8 +655,8 @@ class QAS_OT_open_library_folder(Operator):
             self.report({"ERROR"}, "No asset library selected")
             return {"CANCELLED"}
 
-        # Get the actual path from library name
-        library_path_str = get_library_path_by_name(props.selected_library)
+        # Get the actual path from library identifier
+        library_name, library_path_str = get_library_by_identifier(props.selected_library)
         if not library_path_str:
             self.report({"ERROR"}, f"Could not find library: {props.selected_library}")
             return {"CANCELLED"}
@@ -681,7 +681,7 @@ class QAS_OT_save_asset_to_library_direct(Operator):
     def execute(self, context):
         """Execute the save operation directly using panel properties."""
         from . import properties
-        from .properties import get_library_path_by_name
+        from .properties import get_library_by_identifier
 
         # Get preferences and properties
         prefs = properties.get_addon_preferences(context)
@@ -693,10 +693,16 @@ class QAS_OT_save_asset_to_library_direct(Operator):
             self.report({"ERROR"}, "No asset library selected")
             return {"CANCELLED"}
 
-        # Get the actual path from library name
-        library_path_str = get_library_path_by_name(props.selected_library)
+        # Get the actual path from library identifier
+        library_name, library_path_str = get_library_by_identifier(props.selected_library)
+        
+        # Debug: print what we got
+        print(f"[QAS Debug] Selected library identifier: {props.selected_library}")
+        print(f"[QAS Debug] Resolved library name: {library_name}")
+        print(f"[QAS Debug] Resolved library path: {library_path_str}")
+        
         if not library_path_str:
-            self.report({"ERROR"}, f"Could not find library: {props.selected_library}")
+            self.report({"ERROR"}, f"Could not find library for: {props.selected_library}. Please re-select the library.")
             return {"CANCELLED"}
 
         library_path = Path(library_path_str)

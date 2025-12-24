@@ -100,7 +100,7 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
         layout = self.layout
 
         from . import properties
-        from .properties import get_library_path_by_name
+        from .properties import get_library_by_identifier
         from .operators import sanitize_name
 
         prefs = properties.get_addon_preferences(context)
@@ -114,12 +114,20 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
             text="Add other libraries in the File Paths tab in Blender Preferences."
         )
 
-        # Get the actual path from library name for display
-        library_path_str = get_library_path_by_name(props.selected_library) if props.selected_library and props.selected_library != "NONE" else None
+        # Get the actual library name and path from identifier
+        library_name, library_path_str = (None, None)
+        if props.selected_library and props.selected_library != "NONE":
+            library_name, library_path_str = get_library_by_identifier(props.selected_library)
+            # Debug output
+            print(f"[QAS Panel Debug] selected_library: {props.selected_library}")
+            print(f"[QAS Panel Debug] library_name: {library_name}")
+            print(f"[QAS Panel Debug] library_path_str: {library_path_str}")
 
         if library_path_str:
             row = box.row()
-            row.label(text=f"Path: {library_path_str}", icon="FILE_FOLDER")
+            # Display the library name and path
+            display_text = f"{library_name}: {library_path_str}" if library_name else library_path_str
+            row.label(text=display_text, icon="FILE_FOLDER")
             row.operator("qas.open_library_folder", text="", icon="FILEBROWSER")
 
         layout.separator()

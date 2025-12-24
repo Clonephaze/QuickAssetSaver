@@ -42,6 +42,47 @@ def get_library_path_by_name(library_name):
     return None
 
 
+def get_library_by_identifier(identifier):
+    """
+    Get library name and path from an ASCII-safe identifier.
+    
+    Args:
+        identifier: ASCII-safe identifier (e.g., "LIB_0", "LIB_1")
+    
+    Returns:
+        tuple: (library_name, library_path) or (None, None) if not found
+    """
+    if not identifier or identifier == NONE_LIBRARY_IDENTIFIER:
+        return None, None
+    
+    # Extract index from identifier
+    if identifier.startswith("LIB_"):
+        try:
+            index = int(identifier.split("_")[1])
+            prefs = bpy.context.preferences
+            if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
+                asset_libs = prefs.filepaths.asset_libraries
+                if 0 <= index < len(asset_libs):
+                    lib = asset_libs[index]
+                    if hasattr(lib, "name") and hasattr(lib, "path"):
+                        # Safely get name and path, handling encoding issues
+                        try:
+                            lib_name = str(lib.name) if lib.name else f"Library_{index}"
+                        except (UnicodeDecodeError, UnicodeEncodeError):
+                            lib_name = f"Library_{index}"
+                        
+                        try:
+                            lib_path = str(lib.path) if lib.path else None
+                        except (UnicodeDecodeError, UnicodeEncodeError):
+                            lib_path = None
+                        
+                        return lib_name, lib_path
+        except (ValueError, IndexError, AttributeError) as e:
+            debug_print(f"Error getting library by identifier '{identifier}': {e}")
+    
+    return None, None
+
+
 def build_library_enum_items():
     """
     Build enum items for asset library selection.
@@ -50,9 +91,10 @@ def build_library_enum_items():
     and formats them as enum items for property dropdowns.
 
     Note:
-        Uses library name as identifier to avoid Unicode encoding issues
-        with paths containing non-ASCII characters (e.g., Chinese, Japanese).
-        Handles errors gracefully to prevent crashes with problematic paths.
+        Uses ASCII-safe identifiers (LIB_0, LIB_1, etc.) to avoid Unicode
+        encoding issues. For display names, uses the library name if ASCII-safe,
+        otherwise falls back to showing the folder name from the path.
+        Blender's EnumProperty dropdown cannot render non-ASCII characters.
 
     Returns:
         list: List of tuples in format (identifier, name, description, icon, index)
@@ -67,17 +109,32 @@ def build_library_enum_items():
             for idx, lib in enumerate(asset_libs):
                 try:
                     if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
-                        # Safely encode the description to avoid Unicode issues
                         lib_name = str(lib.name) if lib.name else f"Library_{idx}"
                         lib_path = str(lib.path) if lib.path else "<unknown>"
                         
-                        # Use library name as identifier to avoid Unicode issues with paths
-                        # The path can be retrieved via get_library_path_by_name() when needed
+                        # Check if library name is ASCII-safe for enum display
+                        # Blender's EnumProperty dropdown cannot render non-ASCII characters
+                        try:
+                            lib_name.encode('ascii')
+                            display_name = lib_name
+                        except UnicodeEncodeError:
+                            # Name contains non-ASCII chars, use folder name from path instead
+                            from pathlib import Path
+                            try:
+                                folder_name = Path(lib_path).name
+                                # Check if folder name is also ASCII-safe
+                                folder_name.encode('ascii')
+                                display_name = f"{folder_name} (Library {idx + 1})"
+                            except (UnicodeEncodeError, OSError):
+                                # Folder name also has non-ASCII, use generic name
+                                display_name = f"Library {idx + 1}"
+                        
+                        # Use ASCII-safe identifier and display name
                         items.append(
                             (
-                                lib_name,
-                                lib_name,
-                                f"Save to: {lib_path}",
+                                f"LIB_{idx}",      # ASCII-safe identifier
+                                display_name,      # ASCII-safe display name for dropdown
+                                f"Save to: {lib_path}",  # Full path in tooltip
                                 "ASSET_MANAGER",
                                 idx,
                             )
@@ -257,11 +314,12 @@ class QuickAssetSaverPreferences(AddonPreferences):
         )
 
         if self.selected_library and self.selected_library != NONE_LIBRARY_IDENTIFIER:
-            # Get the actual path from library name
-            library_path = get_library_path_by_name(self.selected_library)
+            # Get the actual library name and path from identifier
+            library_name, library_path = get_library_by_identifier(self.selected_library)
             if library_path:
                 row = layout.row()
-                row.label(text=f"Path: {library_path}", icon="FILE_FOLDER")
+                display_text = f"{library_name}: {library_path}" if library_name else library_path
+                row.label(text=display_text, icon="FILE_FOLDER")
 
         layout.separator()
         layout.label(text="Organization:")
@@ -326,16 +384,16 @@ class QASSaveProperties(PropertyGroup):
             return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
         try:
-            # Get the actual library path from the library name
-            library_name = (
+            # Get the actual library path from the identifier
+            library_identifier = (
                 self.selected_library
                 if self.selected_library != NONE_LIBRARY_IDENTIFIER
                 else None
             )
-            if not library_name:
+            if not library_identifier:
                 return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
-            library_path = get_library_path_by_name(library_name)
+            library_name, library_path = get_library_by_identifier(library_identifier)
             if not library_path:
                 return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
@@ -428,10 +486,10 @@ class QASSaveProperties(PropertyGroup):
 
 def _migrate_old_library_format(addon_prefs, preferences):
     """
-    Migrate old path-based library settings to new name-based format.
+    Migrate old path-based or name-based library settings to new identifier format.
 
-    Old versions stored library paths directly in selected_library.
-    New versions store library names to avoid Unicode issues.
+    Old versions stored library paths or names directly in selected_library.
+    New versions store ASCII-safe identifiers (LIB_0, LIB_1) to avoid Unicode issues.
     This function detects and converts old format to new format.
 
     Args:
@@ -441,41 +499,48 @@ def _migrate_old_library_format(addon_prefs, preferences):
     try:
         current_value = addon_prefs.selected_library
         
-        # Check if current value looks like a path (contains / or \ or is very long)
-        # and not a built-in identifier
-        if current_value and current_value not in (NONE_LIBRARY_IDENTIFIER, "LOCAL", "CURRENT", "ALL", "ESSENTIALS"):
-            # Try to detect if it's a path vs a library name
-            is_path = (
-                "/" in current_value or 
-                "\\" in current_value or 
-                len(current_value) > 64 or
-                current_value.endswith(".blend")
-            )
-            
-            if is_path:
-                # It's likely an old path-based value, try to find matching library by path
-                if hasattr(preferences, "filepaths") and hasattr(
-                    preferences.filepaths, "asset_libraries"
-                ):
-                    for lib in preferences.filepaths.asset_libraries:
-                        try:
-                            # Compare paths, handling Unicode properly
-                            if hasattr(lib, "path") and lib.path:
-                                # Normalize paths for comparison
-                                from pathlib import Path
-                                old_path = Path(current_value).resolve()
-                                lib_path = Path(lib.path).resolve()
-                                if old_path == lib_path and hasattr(lib, "name"):
-                                    # Found matching library, migrate to name-based format
-                                    addon_prefs.selected_library = lib.name
-                                    print(f"Migrated library setting from path to name: {lib.name}")
-                                    return
-                        except (OSError, ValueError, TypeError) as e:
-                            debug_print(f"Migration path comparison error: {e}")
-                            continue
+        # Check if current value is already in new format
+        if current_value and current_value.startswith("LIB_"):
+            return  # Already migrated
+        
+        # Check if current value is a built-in identifier
+        if current_value in (NONE_LIBRARY_IDENTIFIER, "LOCAL", "CURRENT", "ALL", "ESSENTIALS"):
+            return
+        
+        if current_value:
+            # Try to find matching library by name or path
+            if hasattr(preferences, "filepaths") and hasattr(
+                preferences.filepaths, "asset_libraries"
+            ):
+                asset_libs = preferences.filepaths.asset_libraries
                 
-                # If we couldn't migrate by path matching, use default
-                print("Warning: Could not migrate old library path format. Using default library.")
+                # First try to match by name
+                for idx, lib in enumerate(asset_libs):
+                    try:
+                        if hasattr(lib, "name") and lib.name == current_value:
+                            # Found by name
+                            addon_prefs.selected_library = f"LIB_{idx}"
+                            print(f"Migrated library setting to: LIB_{idx} ({lib.name})")
+                            return
+                    except (AttributeError, UnicodeDecodeError):
+                        continue
+                
+                # Then try to match by path
+                for idx, lib in enumerate(asset_libs):
+                    try:
+                        if hasattr(lib, "path") and lib.path:
+                            from pathlib import Path
+                            old_path = Path(current_value).resolve()
+                            lib_path = Path(lib.path).resolve()
+                            if old_path == lib_path:
+                                addon_prefs.selected_library = f"LIB_{idx}"
+                                print(f"Migrated library setting to: LIB_{idx} ({lib.name})")
+                                return
+                    except (OSError, ValueError, TypeError, UnicodeDecodeError):
+                        continue
+                
+                # If we couldn't migrate, use default
+                print("Warning: Could not migrate old library format. Using default library.")
                 _initialize_default_library(addon_prefs, preferences)
     except Exception as e:
         print(f"Warning during library format migration: {e}")
@@ -524,7 +589,7 @@ def _initialize_default_library(addon_prefs, preferences):
     Initialize the default library selection.
 
     Helper function to set the selected_library to the first available
-    library if no library is currently selected.
+    library if no library is currently selected. Uses ASCII-safe identifier.
 
     Args:
         addon_prefs: QuickAssetSaverPreferences instance
@@ -540,8 +605,8 @@ def _initialize_default_library(addon_prefs, preferences):
                 and hasattr(asset_libs[0], "name")
                 and asset_libs[0].name
             ):
-                # Use library name instead of path to avoid Unicode issues
-                addon_prefs.selected_library = asset_libs[0].name
+                # Use ASCII-safe identifier instead of name/path
+                addon_prefs.selected_library = "LIB_0"
     except (AttributeError, IndexError, TypeError) as e:
         print(f"Warning: Could not initialize default library: {e}")
 
