@@ -14,6 +14,12 @@ LARGE_SELECTION_THRESHOLD = 10  # Show warning when selecting more than this man
 # Excluded library references (built-in libraries)
 EXCLUDED_LIBRARY_REFS = ["LOCAL", "CURRENT", "ALL", "ESSENTIALS"]
 
+DEBUG_MODE = False  # Set to True to enable debug prints
+
+def debug_print(*args, **kwargs):
+    """Print debug messages only when DEBUG_MODE is enabled."""
+    if DEBUG_MODE:
+        print(*args, **kwargs)
 
 def is_user_library(context, asset_lib_ref):
     """
@@ -119,9 +125,9 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
         if props.selected_library and props.selected_library != "NONE":
             library_name, library_path_str = get_library_by_identifier(props.selected_library)
             # Debug output
-            print(f"[QAS Panel Debug] selected_library: {props.selected_library}")
-            print(f"[QAS Panel Debug] library_name: {library_name}")
-            print(f"[QAS Panel Debug] library_path_str: {library_path_str}")
+            debug_print(f"[QAS Panel Debug] selected_library: {props.selected_library}")
+            debug_print(f"[QAS Panel Debug] library_name: {library_name}")
+            debug_print(f"[QAS Panel Debug] library_path_str: {library_path_str}")
 
         if library_path_str:
             row = box.row()
@@ -142,6 +148,8 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
                 props.asset_description = prefs.default_description
                 props.asset_license = prefs.default_license
                 props.asset_copyright = prefs.default_copyright
+                # Clear success message when user selects a different asset
+                props.show_success_message = False
 
             if props.asset_display_name:
                 props.asset_file_name = sanitize_name(props.asset_display_name)
@@ -244,6 +252,15 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
             box.label(text="No asset selected", icon="INFO")
             box.label(text="Select an asset")
             box.label(text="to save it to your library")
+        
+        # Show success message after save (outside asset check so it shows when deselected)
+        if props.show_success_message:
+            layout.separator()
+            success_box = layout.box()
+            success_box.label(text="Asset saved successfully!", icon="CHECKMARK")
+            col = success_box.column(align=True)
+            col.label(text="Enjoying Quick Asset Saver?", icon="FUND")
+            col.label(text="Consider leaving a rating! It really helps!", icon="BLANK1")
 
 
 # ============================================================================
@@ -354,6 +371,11 @@ class QAS_PT_asset_bundler(bpy.types.Panel):
             except (AttributeError, TypeError):
                 selected_count = 0
 
+        # Clear success message when selection changes
+        if selected_count > 0 and props.show_success_message:
+            # User has made a new selection, clear the message
+            props.show_success_message = False
+
         # Red warning: saving inside library directory
         if props.save_path:
             from pathlib import Path
@@ -436,6 +458,16 @@ class QAS_PT_asset_bundler(bpy.types.Panel):
             box.label(text="No assets selected", icon="INFO")
             box.label(text="Select assets from the browser", icon="BLANK1")
             box.label(text="to bundle them into one file", icon="BLANK1")
+        
+        # Show success message after bundle (outside selection check so it shows when deselected)
+        if props.show_success_message:
+            layout.separator()
+            success_box = layout.box()
+            success_box.label(text="Bundle created successfully!", icon="CHECKMARK")
+            col = success_box.column(align=True)
+            col.scale_y = 0.8
+            col.label(text="Enjoying Quick Asset Saver?")
+            col.label(text="Consider leaving a rating!")
 
 
 classes = (

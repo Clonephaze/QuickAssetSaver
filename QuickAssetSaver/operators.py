@@ -696,10 +696,11 @@ class QAS_OT_save_asset_to_library_direct(Operator):
         # Get the actual path from library identifier
         library_name, library_path_str = get_library_by_identifier(props.selected_library)
         
+        
         # Debug: print what we got
-        print(f"[QAS Debug] Selected library identifier: {props.selected_library}")
-        print(f"[QAS Debug] Resolved library name: {library_name}")
-        print(f"[QAS Debug] Resolved library path: {library_path_str}")
+        debug_print(f"[QAS Debug] Selected library identifier: {props.selected_library}")
+        debug_print(f"[QAS Debug] Resolved library name: {library_name}")
+        debug_print(f"[QAS Debug] Resolved library path: {library_path_str}")
         
         if not library_path_str:
             self.report({"ERROR"}, f"Could not find library for: {props.selected_library}. Please re-select the library.")
@@ -815,6 +816,9 @@ class QAS_OT_save_asset_to_library_direct(Operator):
             return {"CANCELLED"}
 
         self.report({"INFO"}, f"Saved asset to {output_path.name}")
+        
+        # Show success message in panel
+        props.show_success_message = True
 
         # Refresh Asset Browser if enabled
         if prefs.auto_refresh:
@@ -1032,6 +1036,7 @@ class QAS_OT_bundle_assets(Operator):
                 {"WARNING"}, 
                 f"Bundle saved: {target_path.name} ({imported_count} imported, {skipped_count} skipped due to version incompatibility)"
             )
+            props.show_success_message = True
         elif skipped_count > 0 and imported_count == 0:
             self.report(
                 {"ERROR"},
@@ -1040,6 +1045,7 @@ class QAS_OT_bundle_assets(Operator):
             return {"CANCELLED"}
         else:
             self.report({"INFO"}, f"Bundle saved: {target_path.name} ({imported_count} assets)")
+            props.show_success_message = True
         
         return {"FINISHED"}
 

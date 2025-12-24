@@ -483,6 +483,13 @@ class QASSaveProperties(PropertyGroup):
         default="INCREMENT",
     )
 
+    show_success_message: BoolProperty(
+        name="Show Success Message",
+        description="Internal flag to show thank you message after save",
+        default=False,
+        options={"SKIP_SAVE", "HIDDEN"},
+    )
+
 
 def _migrate_old_library_format(addon_prefs, preferences):
     """
@@ -657,6 +664,13 @@ class QAS_BundlerProperties(PropertyGroup):
         name="Copy Catalog File",
         description="Copy the asset catalog file alongside the bundle for easy sharing",
         default=True,
+    )
+
+    show_success_message: BoolProperty(
+        name="Show Success Message",
+        description="Internal flag to show thank you message after bundle",
+        default=False,
+        options={"SKIP_SAVE", "HIDDEN"},
     )
 
 
