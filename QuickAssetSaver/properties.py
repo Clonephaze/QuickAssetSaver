@@ -118,25 +118,15 @@ def build_library_enum_items():
             for idx, lib in enumerate(asset_libs):
                 try:
                     if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
-                        # Get library name - ensure proper Unicode string
-                        # Using encode/decode to normalize the string
+                        # Get library name - handle potential encoding issues gracefully
                         try:
-                            lib_name = lib.name
-                            if lib_name:
-                                # Normalize Unicode string
-                                lib_name = lib_name.encode('utf-8').decode('utf-8')
-                            else:
-                                lib_name = f"Library {idx + 1}"
-                        except (UnicodeDecodeError, UnicodeEncodeError):
+                            lib_name = lib.name if lib.name else f"Library {idx + 1}"
+                        except (UnicodeDecodeError, UnicodeEncodeError, AttributeError):
                             lib_name = f"Library {idx + 1}"
                         
                         try:
-                            lib_path = lib.path
-                            if lib_path:
-                                lib_path = lib_path.encode('utf-8').decode('utf-8')
-                            else:
-                                lib_path = "<unknown>"
-                        except (UnicodeDecodeError, UnicodeEncodeError):
+                            lib_path = lib.path if lib.path else "<unknown>"
+                        except (UnicodeDecodeError, UnicodeEncodeError, AttributeError):
                             lib_path = "<unknown>"
                         
                         # Use the actual library name as display name
@@ -144,13 +134,7 @@ def build_library_enum_items():
                         # Only the identifier needs to be ASCII-safe
                         display_name = lib_name
                         
-                        # Debug: print what we're adding
-                        debug_print(f"[QAS Enum Debug] Adding library {idx}:")
-                        debug_print(f"  - identifier: LIB_{idx}")
-                        debug_print(f"  - display_name: {display_name}")
-                        debug_print(f"  - display_name type: {type(display_name)}")
-                        debug_print(f"  - display_name repr: {repr(display_name)}")
-                        debug_print(f"  - lib_path: {lib_path}")
+                        debug_print(f"[QAS Enum Debug] Adding library {idx}: id=LIB_{idx}, name={display_name}, path={lib_path}")
                         
                         items.append(
                             (
@@ -178,11 +162,9 @@ def build_library_enum_items():
             )
         )
 
-    # Debug: print final cache
-    debug_print(f"[QAS Enum Debug] Final cached items: {_LIBRARY_ENUM_CACHE}")
-    
     # Cache items to prevent garbage collection before Blender displays them
     _LIBRARY_ENUM_CACHE = items
+    debug_print(f"[QAS Enum Debug] Cached {len(_LIBRARY_ENUM_CACHE)} library items")
     return _LIBRARY_ENUM_CACHE
 
 
@@ -451,7 +433,7 @@ class QASSaveProperties(PropertyGroup):
     )
 
     asset_display_name: StringProperty(
-        name="Asset Name",
+        name="Name",
         description="Display name of the asset as it will appear in the library",
         default="",
     )
@@ -500,7 +482,7 @@ class QASSaveProperties(PropertyGroup):
     )
 
     conflict_resolution: EnumProperty(
-        name="If File Exists",
+        name="Overwrite",
         description="What to do if a file with the same name already exists",
         items=[
             ("INCREMENT", "Increment", "Save as Name_001.blend, etc.", "DUPLICATE", 0),
@@ -514,6 +496,13 @@ class QASSaveProperties(PropertyGroup):
         name="Show Success Message",
         description="Internal flag to show thank you message after save",
         default=False,
+        options={"SKIP_SAVE", "HIDDEN"},
+    )
+
+    success_message_time: bpy.props.FloatProperty(
+        name="Success Message Time",
+        description="Timestamp when success message was shown",
+        default=0.0,
         options={"SKIP_SAVE", "HIDDEN"},
     )
 
@@ -587,7 +576,7 @@ def get_addon_preferences(context=None):
 
     Retrieves the Quick Asset Saver addon preferences from Blender's
     addon system. Automatically initializes default library if none selected.
-    Handles migration from old path-based format to new name-based format.
+    Handles migration from old path-based format to new identifier-based format.
 
     Args:
         context: Blender context (optional, uses bpy.context if None)
@@ -598,6 +587,7 @@ def get_addon_preferences(context=None):
     Note:
         Side effect: Sets selected_library to first available library
         if none is currently selected. This ensures a valid default.
+        Also performs automatic migration from old storage formats.
     """
     if context is None:
         context = bpy.context
@@ -700,11 +690,78 @@ class QAS_BundlerProperties(PropertyGroup):
         options={"SKIP_SAVE", "HIDDEN"},
     )
 
+    success_message_time: bpy.props.FloatProperty(
+        name="Success Message Time",
+        description="Timestamp when success message was shown",
+        default=0.0,
+        options={"SKIP_SAVE", "HIDDEN"},
+    )
+
+
+class QAS_ManageProperties(PropertyGroup):
+    """
+    Property group for managing existing assets in libraries.
+
+    Supports moving selected assets between libraries/catalogs and
+    deleting selected assets from a user library.
+    """
+
+    def get_target_libraries(self, context):
+        return build_library_enum_items()
+
+    def get_target_catalogs(self, context):
+        try:
+            from .operators import get_catalogs_from_cdf
+        except ImportError:
+            return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+
+        try:
+            identifier = (
+                self.move_target_library
+                if self.move_target_library and self.move_target_library != NONE_LIBRARY_IDENTIFIER
+                else None
+            )
+            if not identifier:
+                return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+
+            library_name, library_path = get_library_by_identifier(identifier)
+            if not library_path:
+                return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+
+            _, enum_items = get_catalogs_from_cdf(library_path)
+            return enum_items if enum_items else [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+        except (RuntimeError, OSError, UnicodeDecodeError):
+            return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
+
+    move_target_library: EnumProperty(
+        name="Target Library",
+        description="Library to move the selected assets into",
+        items=get_target_libraries,
+    )
+
+    move_target_catalog: EnumProperty(
+        name="Target Catalog",
+        description="Catalog to assign to moved assets",
+        items=get_target_catalogs,
+    )
+
+    move_conflict_resolution: EnumProperty(
+        name="If File Exists",
+        description="What to do if a file with the same name exists at destination",
+        items=[
+            ("INCREMENT", "Increment", "Save as Name_001.blend, etc.", "DUPLICATE", 0),
+            ("OVERWRITE", "Overwrite", "Replace the existing file", "FILE_REFRESH", 1),
+            ("CANCEL", "Skip", "Skip files that already exist", "CANCEL", 2),
+        ],
+        default="INCREMENT",
+    )
+
 
 classes = (
     QuickAssetSaverPreferences,
     QASSaveProperties,
     QAS_BundlerProperties,
+    QAS_ManageProperties,
 )
 
 
@@ -727,6 +784,9 @@ def register():
     bpy.types.WindowManager.qas_bundler_props = bpy.props.PointerProperty(
         type=QAS_BundlerProperties
     )
+    bpy.types.WindowManager.qas_manage_props = bpy.props.PointerProperty(
+        type=QAS_ManageProperties
+    )
 
 
 def unregister():
@@ -740,5 +800,7 @@ def unregister():
         del bpy.types.WindowManager.qas_bundler_props
     if hasattr(bpy.types.WindowManager, "qas_save_props"):
         del bpy.types.WindowManager.qas_save_props
+    if hasattr(bpy.types.WindowManager, "qas_manage_props"):
+        del bpy.types.WindowManager.qas_manage_props
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

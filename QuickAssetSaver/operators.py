@@ -15,7 +15,17 @@ from bpy.types import Operator
 
 from .properties import get_addon_preferences
 
-DEBUG_MODE = True
+# Debug mode - set to True for verbose logging
+DEBUG_MODE = False
+
+# File and size validation constants
+MIN_BLEND_FILE_SIZE = 100  # Minimum size in bytes for a valid .blend file
+MAX_INCREMENTAL_FILES = 9999  # Maximum number of incremental file versions (e.g., file_0001.blend)
+
+# Asset bundling thresholds
+LARGE_SELECTION_WARNING_THRESHOLD = 25  # Warn user when selecting more than this many assets
+VERY_LARGE_BUNDLE_WARNING_MB = 5000  # Warn for bundles larger than this (in MB)
+DEFAULT_MAX_BUNDLE_SIZE_MB = 4096  # Default maximum bundle size (4GB)
 
 # Cache for catalog enum items to prevent garbage collection
 # Blender's EnumProperty callbacks can have strings GC'd before display
@@ -32,17 +42,22 @@ def sanitize_name(name, max_length=128):
     """
     Sanitize a filename to be cross-platform compatible.
 
+    Removes or replaces characters that are invalid on Windows, macOS, or Linux.
+    Prevents directory traversal attacks by removing path separators.
+
     Args:
-        name: The original filename
-        max_length: Maximum length for the filename
+        name (str): The original filename or path component
+        max_length (int): Maximum length for the sanitized name (default: 128)
 
     Returns:
-        Sanitized filename safe for all platforms
+        str: Sanitized filename safe for all platforms
 
     Note:
-        - Removes path separators to prevent directory traversal
-        - Replaces invalid characters with underscores
-        - Limits length to prevent filesystem issues
+        - Removes path separators (/ and \\) to prevent directory traversal
+        - Replaces invalid characters (<>:"|?*) with underscores
+        - Replaces spaces with underscores for better compatibility
+        - Strips leading/trailing dots and underscores
+        - Returns "asset" as fallback for empty or invalid inputs
     """
     if not name or not isinstance(name, str):
         return "asset"
@@ -51,6 +66,7 @@ def sanitize_name(name, max_length=128):
     name = name.replace("/", "_").replace("\\", "_")
 
     # Remove invalid characters for cross-platform compatibility
+    # Windows: < > : " | ? * and control characters (\x00-\x1f)
     invalid_chars = r'[<>:"|?*\x00-\x1f]'
     sanitized = re.sub(invalid_chars, "_", name)
     sanitized = sanitized.replace(" ", "_")
@@ -66,12 +82,20 @@ def build_asset_filename(base_name, prefs):
     """
     Build the final asset filename with optional prefix, suffix, and date.
 
+    Applies user-configured naming conventions from addon preferences to
+    construct a complete filename. All components are sanitized individually
+    to ensure cross-platform compatibility.
+
     Args:
-        base_name: The sanitized base name of the asset
+        base_name (str): The sanitized base name of the asset
         prefs: Addon preferences containing naming convention settings
 
     Returns:
-        str: Final filename without extension
+        str: Final filename without extension (e.g., "PREFIX_AssetName_SUFFIX_2025-12-24")
+        
+    Note:
+        The returned filename is further sanitized to ensure total length
+        doesn't exceed filesystem limits (200 characters).
     """
     from datetime import datetime
 
@@ -109,17 +133,27 @@ def increment_filename(base_path, name, extension=".blend"):
     """
     Generate an incremented filename if the base file exists.
 
+    Creates files with numeric suffixes (e.g., name_001, name_002) to avoid
+    overwriting existing files. Uses zero-padded 3-digit counters.
+
     Args:
-        base_path: Directory path where file will be saved
-        name: Base filename without extension
-        extension: File extension (default: ".blend")
+        base_path (Path or str): Directory path where file will be saved
+        name (str): Base filename without extension
+        extension (str): File extension including dot (default: ".blend")
 
     Returns:
         Path: Full path with incremented filename if needed
 
     Raises:
-        RuntimeError: If more than 9999 incremental files exist
-        ValueError: If inputs are invalid
+        RuntimeError: If more than MAX_INCREMENTAL_FILES versions exist
+        ValueError: If inputs are invalid (empty name, non-directory path)
+        
+    Examples:
+        >>> increment_filename(Path("/assets"), "MyAsset", ".blend")
+        Path("/assets/MyAsset.blend")  # if doesn't exist
+        
+        >>> increment_filename(Path("/assets"), "MyAsset", ".blend")
+        Path("/assets/MyAsset_001.blend")  # if MyAsset.blend exists
     """
     if not name or not isinstance(name, str):
         raise ValueError("Name must be a non-empty string")
@@ -134,14 +168,17 @@ def increment_filename(base_path, name, extension=".blend"):
         return filepath
 
     counter = 1
-    while counter <= 9999:
+    while counter <= MAX_INCREMENTAL_FILES:
         new_name = f"{name}_{counter:03d}{extension}"
         filepath = base_path / new_name
         if not filepath.exists():
             return filepath
         counter += 1
 
-    raise RuntimeError(f"Too many incremental files for {name} (exceeded 9999)")
+    raise RuntimeError(
+        f"Too many incremental files for '{name}' (exceeded {MAX_INCREMENTAL_FILES}). "
+        "Please clean up old versions or use a different name."
+    )
 
 
 def get_catalog_path_from_uuid(library_path, catalog_uuid):
@@ -230,16 +267,10 @@ def get_catalogs_from_cdf(library_path):
                     uuid.UUID(catalog_uuid)
                     catalogs[catalog_path] = catalog_uuid
                     
-                    # Normalize Unicode string for display name
-                    try:
-                        display_name = catalog_path.encode('utf-8').decode('utf-8')
-                    except (UnicodeDecodeError, UnicodeEncodeError):
-                        display_name = f"Catalog {idx}"
+                    # Use catalog path as display name (Unicode is supported)
+                    display_name = catalog_path
                     
-                    debug_print(f"[QAS Catalog Debug] Adding catalog {idx}:")
-                    debug_print(f"  - uuid: {catalog_uuid}")
-                    debug_print(f"  - display_name: {display_name}")
-                    debug_print(f"  - display_name repr: {repr(display_name)}")
+                    debug_print(f"[QAS Catalog Debug] Adding catalog {idx}: uuid={catalog_uuid}, name={display_name}")
                     
                     # Create enum item with UUID as identifier (ASCII-safe)
                     enum_items.append(
@@ -276,13 +307,21 @@ def clear_and_set_tags(asset_data, tags_string):
     """
     Clear existing tags and set new ones from a comma-separated string.
 
+    Replaces all existing tags on an asset with a new set parsed from
+    the input string. Empty or whitespace-only tags are ignored.
+
     Args:
         asset_data: Blender asset_data object with tags collection
-        tags_string: Comma-separated string of tags
+        tags_string (str): Comma-separated string of tags (e.g., "metal, shiny, PBR")
 
     Note:
         This is a helper to avoid duplicating tag management logic.
-        Tags collection doesn't have a clear() method, so we remove in reverse.
+        Tags collection doesn't have a clear() method, so we remove in reverse
+        to avoid index shifting issues during iteration.
+        
+    Example:
+        >>> clear_and_set_tags(material.asset_data, "metal, shiny, chrome")
+        # Results in three tags: "metal", "shiny", "chrome"
     """
     if not hasattr(asset_data, "tags"):
         return
@@ -312,14 +351,17 @@ def collect_external_dependencies(datablock):
     - Sounds (audio files)
     - Movie Clips (video files)
     - Volumes (OpenVDB files)
-    - Libraries (linked .blend files - noted but not packed)
 
     Args:
-        datablock: Blender datablock (Object, Material, etc.)
+        datablock: Blender datablock (Object, Material, NodeTree, etc.)
 
     Returns:
         dict: Dictionary with keys 'images', 'fonts', 'sounds', 'movieclips', 'volumes'
               containing sets of respective datablock types
+    
+    Note:
+        Libraries (linked .blend files) are noted but not packed.
+        Volume files (.vdb) cannot be packed and will generate warnings.
     """
     dependencies = {
         'images': set(),
@@ -474,6 +516,72 @@ def collect_external_dependencies(datablock):
     return dependencies
 
 
+def collect_selected_asset_files(context):
+    """Collect absolute Paths to selected asset .blend files in the active Asset Browser.
+
+    Returns a tuple (asset_paths, active_library) where active_library is the
+    Blender preferences library object for the current Asset Browser context (or None).
+    """
+    asset_paths = []
+    asset_blend_files = set()
+
+    # Try to resolve the active library similar to bundler logic
+    prefs = context.preferences
+    active_library = None
+    params = getattr(context.space_data, "params", None)
+    if params is not None:
+        asset_lib_ref = None
+        if hasattr(params, "asset_library_reference"):
+            asset_lib_ref = params.asset_library_reference
+        if not asset_lib_ref and hasattr(params, "asset_library_ref"):
+            asset_lib_ref = params.asset_library_ref
+        if asset_lib_ref and hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
+            for lib in prefs.filepaths.asset_libraries:
+                if getattr(lib, "name", None) == asset_lib_ref:
+                    active_library = lib
+                    break
+
+    library_path = Path(active_library.path) if active_library and getattr(active_library, "path", None) else None
+
+    # Gather selected asset files from context using multiple API forms
+    asset_files = None
+    if hasattr(context, "selected_asset_files") and context.selected_asset_files is not None:
+        asset_files = context.selected_asset_files
+    elif hasattr(context, "selected_assets") and context.selected_assets is not None:
+        asset_files = context.selected_assets
+    elif hasattr(context.space_data, "files"):
+        try:
+            asset_files = [f for f in context.space_data.files if getattr(f, "select", False)]
+        except (AttributeError, TypeError, RuntimeError):
+            asset_files = None
+
+    if not asset_files:
+        return [], active_library
+
+    for asset_file in asset_files:
+        asset_path = None
+        if hasattr(asset_file, "full_library_path") and asset_file.full_library_path:
+            asset_path = Path(asset_file.full_library_path)
+        elif hasattr(asset_file, "full_path") and asset_file.full_path:
+            asset_path = Path(asset_file.full_path)
+        elif hasattr(asset_file, "relative_path") and library_path:
+            asset_path = library_path / asset_file.relative_path
+        elif hasattr(asset_file, "name") and library_path:
+            name = asset_file.name
+            asset_path = library_path / (name if name.endswith(".blend") else f"{name}.blend")
+
+        if asset_path and asset_path.exists() and asset_path.is_file() and asset_path.suffix.lower() == ".blend":
+            # sanity size check
+            try:
+                if asset_path.stat().st_size > 100:
+                    asset_blend_files.add(asset_path)
+            except Exception:
+                pass
+
+    asset_paths = list(asset_blend_files)
+    return asset_paths, active_library
+
+
 def write_blend_file(filepath, datablocks):
     """
     Write a .blend file containing only the specified datablocks.
@@ -610,7 +718,6 @@ def write_blend_file(filepath, datablocks):
 
     except (OSError, IOError) as e:
         print(f"Error writing blend file: {e}")
-        # Restore all packed items on error
         _restore_packed_items(packed_items)
         if temp_file and temp_file.exists():
             try:
@@ -618,9 +725,8 @@ def write_blend_file(filepath, datablocks):
             except OSError as cleanup_error:
                 print(f"Failed to clean up temp file: {cleanup_error}")
         return False
-    except Exception as e:
-        print(f"Unexpected error writing blend file: {e}")
-        # Restore all packed items on error
+    except (RuntimeError, ValueError) as e:
+        print(f"Blender API error writing blend file: {e}")
         _restore_packed_items(packed_items)
         if temp_file and temp_file.exists():
             try:
@@ -631,30 +737,42 @@ def write_blend_file(filepath, datablocks):
 
 
 def _restore_packed_items(packed_items):
-    """Helper to restore unpacked state for all temporarily packed items."""
+    """
+    Restore unpacked state for all temporarily packed items.
+    
+    Called after saving to restore the session state, or on error to clean up.
+    Silently handles individual failures to ensure all items are attempted.
+    
+    Args:
+        packed_items (dict): Dictionary with keys matching dependency types,
+                           each containing a list of datablocks to restore
+    """
     for image in packed_items.get('images', []):
         try:
             if image.packed_file:
                 image.unpack(method='USE_ORIGINAL')
-        except Exception:
+        except (RuntimeError, AttributeError):
             pass
+    
     for font in packed_items.get('fonts', []):
         try:
             if font.packed_file:
                 font.unpack(method='USE_ORIGINAL')
-        except Exception:
+        except (RuntimeError, AttributeError):
             pass
+    
     for sound in packed_items.get('sounds', []):
         try:
             if sound.packed_file:
                 sound.unpack(method='USE_ORIGINAL')
-        except Exception:
+        except (RuntimeError, AttributeError):
             pass
+    
     for clip in packed_items.get('movieclips', []):
         try:
             if hasattr(clip, 'packed_file') and clip.packed_file:
                 clip.unpack(method='USE_ORIGINAL')
-        except Exception:
+        except (RuntimeError, AttributeError):
             pass
 
 
@@ -697,11 +815,369 @@ class QAS_OT_open_library_folder(Operator):
         return {"FINISHED"}
 
 
+
+
+
+class QAS_OT_move_selected_to_library(Operator):
+    """Move selected asset files to another library and optionally assign a catalog."""
+
+    bl_idname = "qas.move_selected_to_library"
+    bl_label = "Move Assets"
+    bl_description = "Move selected assets to the target library and assign the chosen catalog"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            hasattr(context, "space_data")
+            and context.space_data.type == "FILE_BROWSER"
+            and getattr(context.space_data, "browse_mode", None) == "ASSETS"
+        )
+
+    def execute(self, context):
+        from .properties import get_library_by_identifier
+
+        prefs = get_addon_preferences()
+        wm = context.window_manager
+        manage = getattr(wm, "qas_manage_props", None)
+        if not manage:
+            self.report({"ERROR"}, "Internal properties missing")
+            return {"CANCELLED"}
+
+        selected_paths, active_library = collect_selected_asset_files(context)
+        if not selected_paths:
+            self.report({"WARNING"}, "No assets selected")
+            return {"CANCELLED"}
+
+        # Resolve target library path from identifier
+        if not manage.move_target_library or manage.move_target_library == "NONE":
+            self.report({"ERROR"}, "Please choose a target library")
+            return {"CANCELLED"}
+
+        target_name, target_path_str = get_library_by_identifier(manage.move_target_library)
+        if not target_path_str:
+            self.report({"ERROR"}, "Target library path not found")
+            return {"CANCELLED"}
+
+        target_root = Path(target_path_str)
+        if not target_root.exists():
+            try:
+                target_root.mkdir(parents=True, exist_ok=True)
+            except Exception as e:
+                self.report({"ERROR"}, f"Cannot access target library: {e}")
+                return {"CANCELLED"}
+
+        # Determine target catalog UUID
+        target_catalog_uuid = manage.move_target_catalog if manage.move_target_catalog else "UNASSIGNED"
+        
+        # Build destination directory with optional catalog subfolders
+        dest_base = target_root
+        if prefs and prefs.use_catalog_subfolders and target_catalog_uuid != "UNASSIGNED":
+            catalog_path = get_catalog_path_from_uuid(str(target_root), target_catalog_uuid)
+            if catalog_path:
+                for part in [p for p in catalog_path.split("/") if p]:
+                    dest_base = dest_base / sanitize_name(part, max_length=64)
+
+        try:
+            dest_base.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self.report({"ERROR"}, f"Could not create destination folders: {e}")
+            return {"CANCELLED"}
+
+        moved = 0
+        skipped = 0
+        catalog_updated = 0
+        
+        for src in selected_paths:
+            try:
+                # First update catalog inside the source file BEFORE moving
+                # This way we modify the file in its original location
+                if target_catalog_uuid != "UNASSIGNED":
+                    if self._update_catalog_in_blend(src, target_catalog_uuid):
+                        catalog_updated += 1
+                
+                # Build destination path
+                dest = dest_base / src.name
+                
+                # Check if source and destination are the same location
+                same_location = False
+                try:
+                    same_location = src.resolve() == dest.resolve()
+                except Exception:
+                    pass
+                    
+                if same_location:
+                    # Same location - catalog already updated above, just skip the move
+                    skipped += 1
+                    continue
+                
+                # Create destination folder structure
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Check for conflicts ONLY if a different file exists at destination
+                if dest.exists():
+                    mode = manage.move_conflict_resolution
+                    if mode == "INCREMENT":
+                        # Only increment if there's actually a different file there
+                        dest = increment_filename(dest.parent, dest.stem, dest.suffix)
+                    elif mode == "CANCEL":
+                        skipped += 1
+                        continue
+                    elif mode == "OVERWRITE":
+                        # Remove existing file before move
+                        dest.unlink()
+                
+                # Move the file
+                shutil.move(str(src), str(dest))
+                moved += 1
+            except Exception as e:
+                print(f"Failed to move {src.name}: {e}")
+                skipped += 1
+
+        # Force refresh asset browser
+        try:
+            if hasattr(bpy.ops.asset, "library_refresh"):
+                bpy.ops.asset.library_refresh()
+            # Also try triggering a general refresh
+            for area in context.screen.areas:
+                if area.type == 'FILE_BROWSER':
+                    area.tag_redraw()
+        except Exception:
+            pass
+
+        msg = f"Moved {moved} file(s)"
+        if catalog_updated:
+            msg += f", catalog set on {catalog_updated}"
+        if skipped:
+            msg += f", skipped {skipped}"
+        self.report({"INFO"}, msg)
+        return {"FINISHED"}
+
+    def _update_catalog_in_blend(self, blend_path, catalog_uuid):
+        """
+        Open a .blend file, set catalog_id on all asset datablocks, and save.
+        
+        Args:
+            blend_path: Path to the .blend file
+            catalog_uuid: UUID string for the target catalog
+            
+        Returns:
+            bool: True if successful
+        """
+        # We need to import assets, modify them, then write back
+        # This is tricky because we can't directly edit external files
+        # Strategy: load datablocks, modify catalog_id, write to temp, replace original
+        
+        try:
+            # Collections to check for assets
+            datablock_collections = [
+                'objects', 'materials', 'node_groups', 'worlds', 'collections',
+                'meshes', 'curves', 'armatures', 'actions', 'brushes',
+            ]
+            
+            # First pass: get the names we're about to import
+            names_to_import = {}  # collection_name -> list of names
+            with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
+                for collection_name in datablock_collections:
+                    if hasattr(data_from, collection_name):
+                        source = getattr(data_from, collection_name)
+                        if source:
+                            names_to_import[collection_name] = list(source)
+            
+            # Temporarily rename any existing datablocks that would conflict
+            renamed_existing = []  # List of (datablock, original_name)
+            for collection_name, names in names_to_import.items():
+                if hasattr(bpy.data, collection_name):
+                    collection = getattr(bpy.data, collection_name)
+                    for name in names:
+                        if name in collection:
+                            existing_db = collection[name]
+                            temp_name = f"__QAS_TEMP_{name}_{id(existing_db)}"
+                            original_name = existing_db.name
+                            existing_db.name = temp_name
+                            renamed_existing.append((existing_db, original_name))
+            
+            # Now import - datablocks will get their original names without incrementing
+            imported_datablocks = {}  # original_name -> datablock
+            asset_datablocks = set()
+            
+            with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
+                for collection_name in datablock_collections:
+                    if hasattr(data_from, collection_name):
+                        source = getattr(data_from, collection_name)
+                        if source:
+                            setattr(data_to, collection_name, list(source))
+            
+            # Process imported datablocks and update catalog
+            for collection_name in names_to_import.keys():
+                if hasattr(data_to, collection_name):
+                    for db in getattr(data_to, collection_name):
+                        if db is not None:
+                            imported_datablocks[db.name] = db
+                            
+                            # Check if it's marked as an asset
+                            if hasattr(db, 'asset_data') and db.asset_data:
+                                db.asset_data.catalog_id = catalog_uuid
+                                asset_datablocks.add(db)
+            
+            if not asset_datablocks:
+                # No assets found, clean up and return
+                for db in imported_datablocks.values():
+                    self._remove_datablock(db)
+                # Restore renamed datablocks
+                for existing_db, original_name in renamed_existing:
+                    try:
+                        existing_db.name = original_name
+                    except Exception:
+                        pass
+                return False
+            
+            # Write modified datablocks back to the file
+            temp_path = blend_path.parent / f".tmp_{blend_path.name}"
+            
+            bpy.data.libraries.write(
+                str(temp_path),
+                asset_datablocks,
+                path_remap="RELATIVE_ALL",
+                fake_user=True,
+                compress=True,
+            )
+            
+            # Clean up imported datablocks from current session
+            for db in imported_datablocks.values():
+                self._remove_datablock(db)
+            
+            # Restore renamed existing datablocks back to their original names
+            for existing_db, original_name in renamed_existing:
+                try:
+                    existing_db.name = original_name
+                except Exception:
+                    pass
+            
+            # Replace original with temp
+            if temp_path.exists():
+                if blend_path.exists():
+                    blend_path.unlink()
+                shutil.move(str(temp_path), str(blend_path))
+                return True
+                
+        except (RuntimeError, IOError, OSError) as e:
+            print(f"Failed to update catalog in {blend_path.name}: {e}")
+            # Try to clean up temp file
+            try:
+                temp_path = blend_path.parent / f".tmp_{blend_path.name}"
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+        
+        return False
+    
+    def _remove_datablock(self, datablock):
+        """
+        Remove a datablock from the current session.
+        
+        Handles different datablock types and silently ignores removal failures.
+        Used during cleanup of temporarily imported assets.
+        
+        Args:
+            datablock: Blender datablock to remove
+        """
+        try:
+            if isinstance(datablock, bpy.types.Object):
+                bpy.data.objects.remove(datablock)
+            elif isinstance(datablock, bpy.types.Material):
+                bpy.data.materials.remove(datablock)
+            elif isinstance(datablock, bpy.types.NodeTree):
+                bpy.data.node_groups.remove(datablock)
+            elif isinstance(datablock, bpy.types.World):
+                bpy.data.worlds.remove(datablock)
+            elif isinstance(datablock, bpy.types.Collection):
+                bpy.data.collections.remove(datablock)
+            elif isinstance(datablock, bpy.types.Mesh):
+                bpy.data.meshes.remove(datablock)
+            elif isinstance(datablock, bpy.types.Curve):
+                bpy.data.curves.remove(datablock)
+            elif isinstance(datablock, bpy.types.Armature):
+                bpy.data.armatures.remove(datablock)
+            elif isinstance(datablock, bpy.types.Action):
+                bpy.data.actions.remove(datablock)
+            elif isinstance(datablock, bpy.types.Brush):
+                bpy.data.brushes.remove(datablock)
+        except (RuntimeError, ReferenceError):
+            # Datablock may already be removed or invalid reference
+            pass
+
+
+class QAS_OT_delete_selected_assets(Operator):
+    """Permanently delete selected asset files - THIS CANNOT BE UNDONE!"""
+
+    bl_idname = "qas.delete_selected_assets"
+    bl_label = "Delete Selected Assets"
+    bl_description = "Permanently delete the selected asset files from disk"
+    bl_options = {"REGISTER"}
+
+    def invoke(self, context, event):
+        # Centered properties dialog with custom warning text
+        return context.window_manager.invoke_props_dialog(self, width=420)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.alert = True
+        box = layout.box()
+        box.alert = True
+        col = box.column(align=True)
+        col.label(text="Delete Selected Assets?", icon="ERROR")
+        col.label(text="This is PERMANENT and CAN'T be undone!")
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            hasattr(context, "space_data")
+            and context.space_data.type == "FILE_BROWSER"
+            and getattr(context.space_data, "browse_mode", None) == "ASSETS"
+        )
+
+    def execute(self, context):
+        prefs = get_addon_preferences()
+        selected_paths, active_library = collect_selected_asset_files(context)
+        if not selected_paths:
+            self.report({"WARNING"}, "No assets selected")
+            return {"CANCELLED"}
+
+        deleted = 0
+        failed = 0
+
+        for p in selected_paths:
+            try:
+                p.unlink()
+                deleted += 1
+            except (OSError, PermissionError) as e:
+                print(f"Failed to delete {p.name}: {e}")
+                failed += 1
+
+        # Refresh asset browser
+        if prefs and prefs.auto_refresh:
+            try:
+                if hasattr(bpy.ops.asset, "library_refresh"):
+                    bpy.ops.asset.library_refresh()
+                elif hasattr(bpy.ops.asset, "refresh"):
+                    bpy.ops.asset.refresh()
+            except (RuntimeError, AttributeError):
+                pass
+
+        if failed:
+            self.report({"WARNING"}, f"Deleted {deleted}, failed {failed}")
+        else:
+            self.report({"INFO"}, f"Deleted {deleted} file(s)")
+        return {"FINISHED"}
+
+
 class QAS_OT_save_asset_to_library_direct(Operator):
     """Save selected asset directly from panel without popup"""
 
     bl_idname = "qas.save_asset_to_library_direct"
-    bl_label = "Save to Asset Library"
+    bl_label = "Copy to Asset Library"
     bl_description = "Save this asset as a standalone .blend file in your asset library"
     bl_options = {"REGISTER", "UNDO"}
 
@@ -844,8 +1320,10 @@ class QAS_OT_save_asset_to_library_direct(Operator):
 
         self.report({"INFO"}, f"Saved asset to {output_path.name}")
         
-        # Show success message in panel
+        # Show success message in panel with timestamp
+        import time
         props.show_success_message = True
+        props.success_message_time = time.time()
 
         # Refresh Asset Browser if enabled
         if prefs.auto_refresh:
@@ -859,7 +1337,7 @@ class QAS_OT_save_asset_to_library_direct(Operator):
                         {"WARNING"},
                         "Asset browser refresh not available. Please refresh manually.",
                     )
-            except Exception as e:
+            except (RuntimeError, AttributeError) as e:
                 print(f"Could not refresh asset browser: {e}")
 
         return {"FINISHED"}
@@ -958,7 +1436,7 @@ class QAS_OT_bundle_assets(Operator):
         except (ValueError, OSError):
             pass
 
-        if len(selected_assets) > 25:
+        if len(selected_assets) > LARGE_SELECTION_WARNING_THRESHOLD:
             self.report(
                 {"INFO"},
                 f"Bundling {len(selected_assets)} assets - this may take several minutes",
@@ -966,7 +1444,7 @@ class QAS_OT_bundle_assets(Operator):
 
         total_size_mb = self._calculate_total_size(selected_assets)
         preferences = get_addon_preferences()
-        max_bundle_size_mb = preferences.max_bundle_size_mb if preferences else 4096
+        max_bundle_size_mb = preferences.max_bundle_size_mb if preferences else DEFAULT_MAX_BUNDLE_SIZE_MB
 
         print(f"Total asset size: {total_size_mb:.1f} MB")
         print(f"Max bundle size: {max_bundle_size_mb} MB")
@@ -979,7 +1457,7 @@ class QAS_OT_bundle_assets(Operator):
             )
             return {"CANCELLED"}
 
-        if total_size_mb > 5000:
+        if total_size_mb > VERY_LARGE_BUNDLE_WARNING_MB:
             self.report(
                 {"WARNING"},
                 f"Very large selection ({total_size_mb / 1024:.1f}GB). "
@@ -1022,7 +1500,7 @@ class QAS_OT_bundle_assets(Operator):
                         skipped_count += 1
                     else:
                         imported_count += 1
-                except Exception as e:
+                except (RuntimeError, OSError, IOError, MemoryError) as e:
                     error_count += 1
                     print(f"  ✗ Fatal error importing '{asset_path.name}': {e}")
                     # Continue with remaining files instead of stopping
@@ -1036,7 +1514,7 @@ class QAS_OT_bundle_assets(Operator):
             if error_count > 0:
                 print(f"  Failed with errors: {error_count} files")
                 
-        except Exception as e:
+        except (RuntimeError, OSError, MemoryError) as e:
             wm.progress_end()
             self.report({"ERROR"}, f"Failed to import assets: {e}")
             import traceback
@@ -1050,7 +1528,7 @@ class QAS_OT_bundle_assets(Operator):
             print(f"Saving bundle to: {target_path}")
             bpy.ops.wm.save_as_mainfile(filepath=str(target_path), copy=True)
             print("Bundle saved successfully")
-        except Exception as e:
+        except (RuntimeError, OSError) as e:
             self.report({"ERROR"}, f"Failed to save bundle: {e}")
             return {"CANCELLED"}
 
@@ -1059,11 +1537,13 @@ class QAS_OT_bundle_assets(Operator):
 
         # Create appropriate success message based on what happened
         if skipped_count > 0 and imported_count > 0:
+            import time
             self.report(
                 {"WARNING"}, 
                 f"Bundle saved: {target_path.name} ({imported_count} imported, {skipped_count} skipped due to version incompatibility)"
             )
             props.show_success_message = True
+            props.success_message_time = time.time()
         elif skipped_count > 0 and imported_count == 0:
             self.report(
                 {"ERROR"},
@@ -1071,8 +1551,10 @@ class QAS_OT_bundle_assets(Operator):
             )
             return {"CANCELLED"}
         else:
+            import time
             self.report({"INFO"}, f"Bundle saved: {target_path.name} ({imported_count} assets)")
             props.show_success_message = True
+            props.success_message_time = time.time()
         
         return {"FINISHED"}
 
@@ -1187,11 +1669,11 @@ class QAS_OT_bundle_assets(Operator):
                         # Additional validation: check file size
                         try:
                             file_size = asset_path.stat().st_size
-                            if file_size > 100:  # Minimum reasonable size for a .blend file
+                            if file_size > MIN_BLEND_FILE_SIZE:
                                 asset_blend_files.add(asset_path)
                                 debug_print(f"✓ Added asset: {asset_path.name} ({file_size} bytes)")
                             else:
-                                print(f"⚠ Skipping {asset_path.name}: File too small ({file_size} bytes)")
+                                print(f"⚠ Skipping {asset_path.name}: File too small ({file_size} bytes, minimum {MIN_BLEND_FILE_SIZE})")
                         except OSError as e:
                             print(f"⚠ Cannot access {asset_path.name}: {e}")
                     elif asset_path.is_dir():
@@ -1272,6 +1754,36 @@ class QAS_OT_bundle_assets(Operator):
         debug_print(f"No matching library found for: {asset_lib_ref}")
         return None
 
+    def _validate_asset_file(self, asset_path):
+        """
+        Validate that an asset file is suitable for import.
+        
+        Checks file existence, type, and size to ensure it's a valid .blend file.
+        
+        Args:
+            asset_path (Path): Path to the asset file to validate
+        
+        Returns:
+            tuple: (is_valid: bool, error_message: str or None)
+        """
+        if not asset_path.exists():
+            return False, f"File does not exist: {asset_path}"
+        
+        if not asset_path.is_file():
+            return False, f"Not a file: {asset_path}"
+        
+        if asset_path.suffix.lower() != ".blend":
+            return False, f"Not a .blend file: {asset_path}"
+        
+        try:
+            file_size = asset_path.stat().st_size
+            if file_size < MIN_BLEND_FILE_SIZE:
+                return False, f"File too small ({file_size} bytes), possibly corrupted (minimum {MIN_BLEND_FILE_SIZE} bytes)"
+        except OSError as e:
+            return False, f"Cannot access file: {e}"
+        
+        return True, None
+
     def _import_asset_file(self, asset_path, duplicate_mode):
         """
         Import datablocks from a .blend file, preserving asset status.
@@ -1280,8 +1792,8 @@ class QAS_OT_bundle_assets(Operator):
         Handles name conflicts based on duplicate_mode setting.
 
         Args:
-            asset_path: Path object for the source .blend file
-            duplicate_mode: 'INCREMENT' or 'OVERWRITE' - controls name conflict resolution
+            asset_path (Path): Path object for the source .blend file
+            duplicate_mode (str): 'INCREMENT' or 'OVERWRITE' - controls name conflict resolution
             
         Returns:
             bool: True if successfully imported, False if skipped, None for errors
@@ -1289,26 +1801,9 @@ class QAS_OT_bundle_assets(Operator):
         print(f"  Importing: {asset_path.name}")
         
         # Validate the file before attempting to load
-        if not asset_path.exists():
-            print(f"  ✗ Skipping: File does not exist: {asset_path}")
-            return False
-        
-        if not asset_path.is_file():
-            print(f"  ✗ Skipping: Not a file: {asset_path}")
-            return False
-        
-        if asset_path.suffix.lower() != ".blend":
-            print(f"  ✗ Skipping: Not a .blend file: {asset_path}")
-            return False
-        
-        # Check file size to ensure it's not empty or corrupted
-        try:
-            file_size = asset_path.stat().st_size
-            if file_size < 100:  # .blend files are always at least a few hundred bytes
-                print(f"  ✗ Skipping: File too small ({file_size} bytes), possibly corrupted: {asset_path}")
-                return False
-        except OSError as e:
-            print(f"  ✗ Skipping: Cannot access file: {e}")
+        is_valid, error_msg = self._validate_asset_file(asset_path)
+        if not is_valid:
+            print(f"  ✗ Skipping: {error_msg}")
             return False
 
         skip_collections = {
@@ -1345,10 +1840,10 @@ class QAS_OT_bundle_assets(Operator):
 
                             if items_to_import:
                                 setattr(data_to, attr, items_to_import)
-                    except (AttributeError, TypeError, KeyError) as e:
+                    except (AttributeError, TypeError, KeyError, RuntimeError) as e:
                         # Silently skip collections that can't be processed
                         debug_print(f"Skipping collection '{attr}': {e}")
-                    except Exception as e:
+                    except (ValueError, MemoryError) as e:
                         # Log unexpected errors but continue processing
                         print(f"Unexpected error processing collection '{attr}': {e}")
         except (OSError, IOError, RuntimeError) as e:
@@ -1371,17 +1866,20 @@ class QAS_OT_bundle_assets(Operator):
         """
         Remove an existing datablock if OVERWRITE mode is active.
 
+        Used during asset bundling to replace duplicate datablocks with
+        newer versions from the imported assets.
+
         Args:
-            collection_name: Name of the bpy.data collection (e.g., 'objects', 'materials')
-            item_name: Name of the item to remove
+            collection_name (str): Name of the bpy.data collection (e.g., 'objects', 'materials')
+            item_name (str): Name of the item to remove
         """
         try:
             collection = getattr(bpy.data, collection_name, None)
             if collection and item_name in collection:
                 datablock = collection[item_name]
                 collection.remove(datablock)
-        except Exception as e:
-            print(f"Could not remove existing datablock {item_name}: {e}")
+        except (RuntimeError, ReferenceError, KeyError) as e:
+            debug_print(f"Could not remove existing datablock {item_name}: {e}")
 
     def _copy_catalog_file(self, library_path, target_path, output_name):
         """
@@ -1405,7 +1903,7 @@ class QAS_OT_bundle_assets(Operator):
         try:
             shutil.copy(catalog_source, catalog_dest)
             print(f"Catalog file copied to {catalog_dest}")
-        except Exception as e:
+        except (OSError, IOError, shutil.Error) as e:
             print(f"Warning: Could not copy catalog file: {e}")
 
 
@@ -1439,6 +1937,8 @@ class QAS_OT_open_bundle_folder(Operator):
 classes = (
     QAS_OT_save_asset_to_library_direct,
     QAS_OT_open_library_folder,
+    QAS_OT_move_selected_to_library,
+    QAS_OT_delete_selected_assets,
     QAS_OT_bundle_assets,
     QAS_OT_open_bundle_folder,
 )
