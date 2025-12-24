@@ -7,14 +7,14 @@ Provides a side panel for saving assets to libraries.
 
 import bpy
 
+from .properties import DEBUG_MODE
+
 # UI Constants
 MAX_PATH_DISPLAY_LENGTH = 40  # Characters before splitting path display
 LARGE_SELECTION_THRESHOLD = 10  # Show warning when selecting more than this many assets
 
 # Excluded library references (built-in libraries)
 EXCLUDED_LIBRARY_REFS = ["LOCAL", "CURRENT", "ALL", "ESSENTIALS"]
-
-DEBUG_MODE = False  # Set to True to enable debug prints
 
 def debug_print(*args, **kwargs):
     """Print debug messages only when DEBUG_MODE is enabled."""
@@ -114,7 +114,7 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
         props = wm.qas_save_props
 
         box = layout.box()
-        box.label(text="Target Library:", icon="ASSET_MANAGER")
+        box.label(text="Target", icon="ASSET_MANAGER")
         box.prop(props, "selected_library", text="")
         box.label(
             text="Add other libraries in the File Paths tab in Blender Preferences."
@@ -132,11 +132,17 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
         if library_path_str:
             row = box.row()
             # Display the library name and path
-            display_text = f"{library_name}: {library_path_str}" if library_name else library_path_str
-            row.label(text=display_text, icon="FILE_FOLDER")
-            row.operator("qas.open_library_folder", text="", icon="FILEBROWSER")
+            row.label(text=library_path_str)
+            row.operator("qas.open_library_folder", text="", icon="FOLDER_REDIRECT")
 
         layout.separator()
+
+        # Check for timeout on success message (15 seconds)
+        import time
+        if props.show_success_message and props.success_message_time > 0:
+            if time.time() - props.success_message_time > 15.0:
+                props.show_success_message = False
+                props.success_message_time = 0.0
 
         if context.asset and hasattr(context, "asset"):
             asset_name = getattr(context.asset, "name", "Unknown")
@@ -150,16 +156,17 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
                 props.asset_copyright = prefs.default_copyright
                 # Clear success message when user selects a different asset
                 props.show_success_message = False
+                props.success_message_time = 0.0
 
             if props.asset_display_name:
                 props.asset_file_name = sanitize_name(props.asset_display_name)
 
             outer_box = layout.box()
-            outer_box.label(text="Selected Asset:", icon="ASSET_MANAGER")
+            outer_box.label(text="Asset Data", icon="ASSET_MANAGER")
             outer_box.label(text=f"  {asset_name}")
 
             inner_box = outer_box.box()
-            inner_box.label(text="Save Options:", icon="SETTINGS")
+            inner_box.label(text="Options", icon="SETTINGS")
 
             inner_box.prop(props, "asset_display_name")
             inner_box.prop(props, "catalog")
@@ -181,7 +188,7 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
                 from .operators import get_catalog_path_from_uuid, build_asset_filename
 
                 preview_box = layout.box()
-                preview_box.label(text="Target Path:", icon="FILE_FOLDER")
+                preview_box.label(text="Path", icon="FILE_FOLDER")
 
                 # Build the preview path with validation to handle invalid inputs gracefully
                 try:
@@ -223,28 +230,31 @@ class QAS_PT_asset_tools_panel(bpy.types.Panel):
                     # Path is not relative or other path error
                     path_str = full_path.name
 
+                # Path display in a nested box for visual emphasis
+                path_display_box = preview_box.box()
+                
                 # Split long paths across multiple lines
                 if len(path_str) > MAX_PATH_DISPLAY_LENGTH:
-                    col = preview_box.column(align=True)
+                    col = path_display_box.column(align=True)
                     col.scale_y = 0.8
                     # Show library name
-                    col.label(text=f"  {library_path.name}/", icon="BLANK1")
+                    col.label(text=f"{library_path.name}/", icon="BLANK1")
                     # Show subdirectories
                     if target_path != library_path:
                         try:
                             subpath = target_path.relative_to(library_path)
-                            col.label(text=f"    {subpath}/", icon="BLANK1")
+                            col.label(text=f"  {subpath}/", icon="BLANK1")
                         except ValueError:
                             pass
                     # Show filename
-                    col.label(text=f"    {final_filename}.blend", icon="BLANK1")
+                    col.label(text=f"  {final_filename}.blend", icon="BLANK1")
                 else:
-                    preview_box.label(text=f"  {path_str}", icon="BLANK1")
+                    path_display_box.label(text=path_str, icon="BLANK1")
 
             layout.separator()
             layout.operator(
                 "qas.save_asset_to_library_direct",
-                text="Save to Asset Library",
+                text="Copy to Asset Library",
                 icon="EXPORT",
             )
         else:
@@ -339,16 +349,17 @@ class QAS_PT_asset_bundler(bpy.types.Panel):
         props = wm.qas_bundler_props
 
         # Output name
+        layout.label(text="Bundle", icon="PACKAGE")
         row = layout.row()
-        row.prop(props, "output_name", text="Bundle Name", icon="FILE_BLEND")
+        row.prop(props, "output_name", text="Name", icon="FILE_BLEND")
 
         # Save path
         row = layout.row()
-        row.prop(props, "save_path", text="Save To", icon="FOLDER_REDIRECT")
+        row.prop(props, "save_path", text="File Path", icon="FOLDER_REDIRECT")
 
         # Duplicate handling
         row = layout.row()
-        row.prop(props, "duplicate_mode", text="Duplicates", icon="DUPLICATE")
+        row.prop(props, "duplicate_mode", text="Overwrite", icon="DUPLICATE")
 
         layout.prop(props, "copy_catalog")
 
@@ -371,10 +382,18 @@ class QAS_PT_asset_bundler(bpy.types.Panel):
             except (AttributeError, TypeError):
                 selected_count = 0
 
+        # Check for timeout on success message (15 seconds)
+        import time
+        if props.show_success_message and props.success_message_time > 0:
+            if time.time() - props.success_message_time > 15.0:
+                props.show_success_message = False
+                props.success_message_time = 0.0
+
         # Clear success message when selection changes
         if selected_count > 0 and props.show_success_message:
             # User has made a new selection, clear the message
             props.show_success_message = False
+            props.success_message_time = 0.0
 
         # Red warning: saving inside library directory
         if props.save_path:
@@ -465,14 +484,92 @@ class QAS_PT_asset_bundler(bpy.types.Panel):
             success_box = layout.box()
             success_box.label(text="Bundle created successfully!", icon="CHECKMARK")
             col = success_box.column(align=True)
-            col.scale_y = 0.8
-            col.label(text="Enjoying Quick Asset Saver?")
-            col.label(text="Consider leaving a rating!")
+            col.label(text="Enjoying Quick Asset Saver?", icon="FUND")
+            col.label(text="Consider leaving a rating! It really helps!", icon="BLANK1")
+
+
+class QAS_PT_asset_manage(bpy.types.Panel):
+    """Panel for managing assets inside user libraries (move/delete/catalog)."""
+
+    bl_label = "Asset Management"
+    bl_idname = "QAS_PT_asset_manage"
+    bl_space_type = "FILE_BROWSER"
+    bl_region_type = "TOOLS"
+    bl_category = "Assets"
+
+    @classmethod
+    def poll(cls, context):
+        space = context.space_data
+        if not space or space.type != "FILE_BROWSER":
+            return False
+        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
+            return False
+
+        params = space.params
+        if not hasattr(params, "asset_library_reference"):
+            return False
+
+        # Visible when browsing a user-configured library (not LOCAL/CURRENT/ALL/ESSENTIALS)
+        asset_lib_ref = params.asset_library_reference
+        if not is_user_library(context, asset_lib_ref):
+            return False
+
+        if hasattr(params, "asset_library_ref"):
+            newer_ref = params.asset_library_ref
+            if not is_user_library(context, newer_ref):
+                return False
+
+        return True
+
+    def draw(self, context):
+        layout = self.layout
+        wm = context.window_manager
+        manage = getattr(wm, "qas_manage_props", None)
+
+        # Selection count (for enabling/disabling buttons)
+        selected_count = 0
+        if hasattr(context, "selected_asset_files") and context.selected_asset_files is not None:
+            selected_count = len(context.selected_asset_files)
+        elif hasattr(context, "selected_assets") and context.selected_assets is not None:
+            selected_count = len(context.selected_assets)
+        elif hasattr(context.space_data, "files"):
+            try:
+                selected_count = len([f for f in context.space_data.files if getattr(f, "select", False)])
+            except (AttributeError, TypeError, RuntimeError):
+                selected_count = 0
+
+        # Target library + catalog
+        if manage:
+            layout.label(text="Target", icon="ASSET_MANAGER")
+            row = layout.row()
+            row.prop(manage, "move_target_library", text="Library")
+            row = layout.row()
+            row.prop(manage, "move_target_catalog", text="Catalog")
+            row = layout.row()
+            row.prop(manage, "move_conflict_resolution", text="Overwrite")
+
+        layout.separator()
+
+        # Move to target library and assign catalog (single consolidated action)
+        move_row = layout.row()
+        move_row.scale_y = 1.2
+        move_row.enabled = selected_count > 0
+        move_row.operator("qas.move_selected_to_library", text="Move Assets", icon="EXPORT")
+
+        layout.separator()
+
+        # Delete selected assets permanently
+        del_row = layout.row()
+        del_row.enabled = selected_count > 0
+        del_row.operator("qas.delete_selected_assets", text="Delete Selected", icon="TRASH")
 
 
 classes = (
     QAS_PT_asset_tools_panel,
     QAS_PT_asset_bundler,
+    QAS_PT_asset_manage,
+    # New management panel for user libraries
+    
 )
 
 
