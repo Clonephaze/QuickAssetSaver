@@ -433,7 +433,7 @@ class QASSaveProperties(PropertyGroup):
     )
 
     asset_display_name: StringProperty(
-        name="Asset Name",
+        name="Name",
         description="Display name of the asset as it will appear in the library",
         default="",
     )
@@ -482,7 +482,7 @@ class QASSaveProperties(PropertyGroup):
     )
 
     conflict_resolution: EnumProperty(
-        name="If File Exists",
+        name="Overwrite",
         description="What to do if a file with the same name already exists",
         items=[
             ("INCREMENT", "Increment", "Save as Name_001.blend, etc.", "DUPLICATE", 0),
@@ -496,6 +496,13 @@ class QASSaveProperties(PropertyGroup):
         name="Show Success Message",
         description="Internal flag to show thank you message after save",
         default=False,
+        options={"SKIP_SAVE", "HIDDEN"},
+    )
+
+    success_message_time: bpy.props.FloatProperty(
+        name="Success Message Time",
+        description="Timestamp when success message was shown",
+        default=0.0,
         options={"SKIP_SAVE", "HIDDEN"},
     )
 
@@ -680,6 +687,13 @@ class QAS_BundlerProperties(PropertyGroup):
         name="Show Success Message",
         description="Internal flag to show thank you message after bundle",
         default=False,
+        options={"SKIP_SAVE", "HIDDEN"},
+    )
+
+    success_message_time: bpy.props.FloatProperty(
+        name="Success Message Time",
+        description="Timestamp when success message was shown",
+        default=0.0,
         options={"SKIP_SAVE", "HIDDEN"},
     )
 

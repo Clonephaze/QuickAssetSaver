@@ -1177,7 +1177,7 @@ class QAS_OT_save_asset_to_library_direct(Operator):
     """Save selected asset directly from panel without popup"""
 
     bl_idname = "qas.save_asset_to_library_direct"
-    bl_label = "Save to Asset Library"
+    bl_label = "Copy to Asset Library"
     bl_description = "Save this asset as a standalone .blend file in your asset library"
     bl_options = {"REGISTER", "UNDO"}
 
@@ -1320,8 +1320,10 @@ class QAS_OT_save_asset_to_library_direct(Operator):
 
         self.report({"INFO"}, f"Saved asset to {output_path.name}")
         
-        # Show success message in panel
+        # Show success message in panel with timestamp
+        import time
         props.show_success_message = True
+        props.success_message_time = time.time()
 
         # Refresh Asset Browser if enabled
         if prefs.auto_refresh:
@@ -1535,11 +1537,13 @@ class QAS_OT_bundle_assets(Operator):
 
         # Create appropriate success message based on what happened
         if skipped_count > 0 and imported_count > 0:
+            import time
             self.report(
                 {"WARNING"}, 
                 f"Bundle saved: {target_path.name} ({imported_count} imported, {skipped_count} skipped due to version incompatibility)"
             )
             props.show_success_message = True
+            props.success_message_time = time.time()
         elif skipped_count > 0 and imported_count == 0:
             self.report(
                 {"ERROR"},
@@ -1547,8 +1551,10 @@ class QAS_OT_bundle_assets(Operator):
             )
             return {"CANCELLED"}
         else:
+            import time
             self.report({"INFO"}, f"Bundle saved: {target_path.name} ({imported_count} assets)")
             props.show_success_message = True
+            props.success_message_time = time.time()
         
         return {"FINISHED"}
 
