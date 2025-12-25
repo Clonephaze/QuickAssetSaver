@@ -11,5 +11,7 @@ blender_version_min = "4.2.0"
 license = [
   "SPDX:GPL-3.0-or-later",
 ]
+wheels = ["./wheels/Send2Trash-1.8.3-py3-none-any.whl"]
 [permissions]
 files = "For reading user library paths and writing asset files"
+

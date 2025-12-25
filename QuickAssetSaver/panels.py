@@ -491,7 +491,7 @@ class QAS_PT_asset_bundler(bpy.types.Panel):
 class QAS_PT_asset_manage(bpy.types.Panel):
     """Panel for managing assets inside user libraries (move/delete/catalog)."""
 
-    bl_label = "Asset Management"
+    bl_label = "Quick Asset Manager"
     bl_idname = "QAS_PT_asset_manage"
     bl_space_type = "FILE_BROWSER"
     bl_region_type = "TOOLS"
@@ -526,42 +526,106 @@ class QAS_PT_asset_manage(bpy.types.Panel):
         wm = context.window_manager
         manage = getattr(wm, "qas_manage_props", None)
 
-        # Selection count (for enabling/disabling buttons)
-        selected_count = 0
+        # Get selected asset files
+        asset_files = None
         if hasattr(context, "selected_asset_files") and context.selected_asset_files is not None:
-            selected_count = len(context.selected_asset_files)
+            asset_files = context.selected_asset_files
         elif hasattr(context, "selected_assets") and context.selected_assets is not None:
-            selected_count = len(context.selected_assets)
+            asset_files = context.selected_assets
         elif hasattr(context.space_data, "files"):
             try:
-                selected_count = len([f for f in context.space_data.files if getattr(f, "select", False)])
+                asset_files = [f for f in context.space_data.files if getattr(f, "select", False)]
             except (AttributeError, TypeError, RuntimeError):
-                selected_count = 0
+                asset_files = None
 
-        # Target library + catalog
+        selected_count = len(asset_files) if asset_files else 0
+
+        # ============ EDIT SECTION (top) ============
         if manage:
-            layout.label(text="Target", icon="ASSET_MANAGER")
-            row = layout.row()
-            row.prop(manage, "move_target_library", text="Library")
-            row = layout.row()
-            row.prop(manage, "move_target_catalog", text="Catalog")
-            row = layout.row()
-            row.prop(manage, "move_conflict_resolution", text="Overwrite")
+            layout.label(text="Edit", icon="GREASEPENCIL")
+            box = layout.box()
+            
+            # Auto-populate edit fields when exactly one asset is selected
+            if selected_count == 1 and asset_files:
+                asset_file = asset_files[0]
+                asset_name = getattr(asset_file, "name", "")
+                
+                # Get current selection identifier to track changes
+                current_selection_id = asset_name
+                
+                # Only update if selection changed (check via a simple tracking attribute)
+                last_selection = manage.edit_last_selection
+                if last_selection != current_selection_id:
+                    # Update the fields with selected asset info
+                    manage.edit_asset_name = asset_name
+                    
+                    # Try to get tags from the asset's metadata
+                    tags_str = ""
+                    if hasattr(asset_file, "asset_data") and asset_file.asset_data:
+                        try:
+                            tags = asset_file.asset_data.tags
+                            tags_str = ", ".join(tag.name for tag in tags)
+                        except (AttributeError, TypeError):
+                            pass
+                    elif hasattr(asset_file, "metadata") and asset_file.metadata:
+                        try:
+                            tags = getattr(asset_file.metadata, "tags", None)
+                            if tags:
+                                tags_str = ", ".join(tag.name for tag in tags)
+                        except (AttributeError, TypeError):
+                            pass
+                    
+                    manage.edit_asset_tags = tags_str
+                    manage.edit_last_selection = current_selection_id
+            elif selected_count != 1:
+                # Clear tracking when not exactly one selected
+                if manage.edit_last_selection:
+                    manage.edit_last_selection = ""
+            
+            box.prop(manage, "edit_asset_name", text="Name")
+            box.prop(manage, "edit_asset_tags", text="Tags")
+            edit_row = box.row()
+            edit_row.enabled = selected_count == 1
+            edit_row.operator("qas.edit_selected_asset", text="Apply", icon="CHECKMARK")
 
         layout.separator()
 
-        # Move to target library and assign catalog (single consolidated action)
-        move_row = layout.row()
-        move_row.scale_y = 1.2
-        move_row.enabled = selected_count > 0
-        move_row.operator("qas.move_selected_to_library", text="Move Assets", icon="EXPORT")
+        # ============ MOVE SECTION (middle) ============
+        if manage:
+            layout.label(text="Move", icon="ASSET_MANAGER")
+            box = layout.box()
+            box.prop(manage, "move_target_library", text="Library")
+            box.prop(manage, "move_target_catalog", text="Catalog")
+            box.prop(manage, "move_conflict_resolution", text="Overwrite")
+
+            # Move button
+            move_row = box.row()
+            move_row.scale_y = 1.2
+            move_row.enabled = selected_count > 0
+            move_row.operator("qas.move_selected_to_library", text="Move", icon="EXPORT")
 
         layout.separator()
 
-        # Delete selected assets permanently
+        # ============ REPLACE SECTION (before delete) ============
+        layout.label(text="Replace", icon="UV_SYNC_SELECT")
+        box = layout.box()
+        col = box.column(align=True)
+        col.scale_y = 0.7
+        col.label(text="Replace selected scene objects")
+        col.label(text="with the selected asset")
+        if manage:
+            box.prop(manage, "swap_link_mode", text="Mode")
+        swap_row = box.row()
+        swap_row.scale_y = 1.1
+        swap_row.enabled = selected_count == 1
+        swap_row.operator("qas.swap_selected_with_asset", text="Replace", icon="FILE_REFRESH")
+
+        layout.separator()
+
+        # ============ DELETE SECTION (bottom) ============
         del_row = layout.row()
         del_row.enabled = selected_count > 0
-        del_row.operator("qas.delete_selected_assets", text="Delete Selected", icon="TRASH")
+        del_row.operator("qas.delete_selected_assets", text="Delete Selected Files", icon="TRASH")
 
 
 classes = (

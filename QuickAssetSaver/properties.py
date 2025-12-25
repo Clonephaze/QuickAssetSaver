@@ -702,8 +702,8 @@ class QAS_ManageProperties(PropertyGroup):
     """
     Property group for managing existing assets in libraries.
 
-    Supports moving selected assets between libraries/catalogs and
-    deleting selected assets from a user library.
+    Supports moving selected assets between libraries/catalogs,
+    renaming assets, updating tags, and swapping scene objects.
     """
 
     def get_target_libraries(self, context):
@@ -733,6 +733,20 @@ class QAS_ManageProperties(PropertyGroup):
         except (RuntimeError, OSError, UnicodeDecodeError):
             return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
+    # Edit properties (top of panel)
+    edit_asset_name: StringProperty(
+        name="Name",
+        description="New name for the selected asset (leave empty to keep current)",
+        default="",
+    )
+
+    edit_asset_tags: StringProperty(
+        name="Tags",
+        description="Comma-separated tags (replaces existing tags, leave empty to keep current)",
+        default="",
+    )
+
+    # Move properties (middle of panel)
     move_target_library: EnumProperty(
         name="Target Library",
         description="Library to move the selected assets into",
@@ -754,6 +768,25 @@ class QAS_ManageProperties(PropertyGroup):
             ("CANCEL", "Skip", "Skip files that already exist", "CANCEL", 2),
         ],
         default="INCREMENT",
+    )
+
+    # Swap properties
+    swap_link_mode: EnumProperty(
+        name="Import Mode",
+        description="How to import the swapped asset",
+        items=[
+            ("APPEND", "Append", "Copy the asset data into the file", "APPEND_BLEND", 0),
+            ("LINK", "Link", "Link to the original asset file", "LINK_BLEND", 1),
+        ],
+        default="APPEND",
+    )
+
+    # Internal tracking for edit field auto-population
+    edit_last_selection: StringProperty(
+        name="",
+        description="Internal: tracks last selected asset for edit auto-fill",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
     )
 
 

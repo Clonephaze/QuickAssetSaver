@@ -8,10 +8,12 @@ Includes helpers for file I/O, catalog parsing, metadata assignment, and sanitiz
 import re
 import shutil
 import uuid
+import mathutils
 from pathlib import Path
 
 import bpy
 from bpy.types import Operator
+from send2trash import send2trash
 
 from .properties import get_addon_preferences
 
@@ -36,6 +38,65 @@ def debug_print(*args, **kwargs):
     """Print debug messages only when DEBUG_MODE is enabled."""
     if DEBUG_MODE:
         print(*args, **kwargs)
+
+
+def refresh_asset_browser_deferred():
+    """
+    Deferred refresh callback for timer.
+    Finds Asset Browser areas and forces refresh with proper context.
+    Returns None to run only once.
+    """
+    try:
+        # Find a window with an asset browser to create proper context
+        for window in bpy.context.window_manager.windows:
+            screen = window.screen
+            for area in screen.areas:
+                if area.type == 'FILE_BROWSER':
+                    space = area.spaces.active
+                    if hasattr(space, 'browse_mode') and space.browse_mode == 'ASSETS':
+                        # Create override context for this specific area
+                        for region in area.regions:
+                            if region.type == 'WINDOW':
+                                with bpy.context.temp_override(
+                                    window=window,
+                                    screen=screen,
+                                    area=area,
+                                    region=region
+                                ):
+                                    if hasattr(bpy.ops.asset, "library_refresh"):
+                                        bpy.ops.asset.library_refresh()
+                                    elif hasattr(bpy.ops.asset, "refresh"):
+                                        bpy.ops.asset.refresh()
+                                break
+                        # Tag for redraw
+                        area.tag_redraw()
+    except Exception as e:
+        if DEBUG_MODE:
+            print(f"[QAS] Deferred refresh failed: {e}")
+    return None  # Don't repeat
+
+
+def refresh_asset_browser(context):
+    """
+    Force refresh the Asset Browser using a deferred timer.
+    
+    Uses bpy.app.timers to schedule refresh after operator completes,
+    which ensures operator has fully finished before refresh runs.
+    
+    Args:
+        context: Blender context (used for immediate redraw tagging)
+    """
+    # Schedule refresh for next tick (0.1 second delay)
+    if not bpy.app.timers.is_registered(refresh_asset_browser_deferred):
+        bpy.app.timers.register(refresh_asset_browser_deferred, first_interval=0.1)
+    
+    # Also tag file browser areas for immediate redraw
+    try:
+        for area in context.screen.areas:
+            if area.type == 'FILE_BROWSER':
+                area.tag_redraw()
+    except Exception:
+        pass
 
 
 def sanitize_name(name, max_length=128):
@@ -890,11 +951,11 @@ class QAS_OT_move_selected_to_library(Operator):
         
         for src in selected_paths:
             try:
-                # First update catalog inside the source file BEFORE moving
-                # This way we modify the file in its original location
-                if target_catalog_uuid != "UNASSIGNED":
-                    if self._update_catalog_in_blend(src, target_catalog_uuid):
-                        catalog_updated += 1
+                # Update catalog inside the source file BEFORE moving
+                # For UNASSIGNED, we pass empty string to clear the catalog
+                catalog_to_set = "" if target_catalog_uuid == "UNASSIGNED" else target_catalog_uuid
+                if self._update_catalog_in_blend(src, catalog_to_set):
+                    catalog_updated += 1
                 
                 # Build destination path
                 dest = dest_base / src.name
@@ -935,15 +996,7 @@ class QAS_OT_move_selected_to_library(Operator):
                 skipped += 1
 
         # Force refresh asset browser
-        try:
-            if hasattr(bpy.ops.asset, "library_refresh"):
-                bpy.ops.asset.library_refresh()
-            # Also try triggering a general refresh
-            for area in context.screen.areas:
-                if area.type == 'FILE_BROWSER':
-                    area.tag_redraw()
-        except Exception:
-            pass
+        refresh_asset_browser(context)
 
         msg = f"Moved {moved} file(s)"
         if catalog_updated:
@@ -1110,11 +1163,11 @@ class QAS_OT_move_selected_to_library(Operator):
 
 
 class QAS_OT_delete_selected_assets(Operator):
-    """Permanently delete selected asset files - THIS CANNOT BE UNDONE!"""
+    """Move selected asset files to the system Recycle Bin / Trash"""
 
     bl_idname = "qas.delete_selected_assets"
     bl_label = "Delete Selected Assets"
-    bl_description = "Permanently delete the selected asset files from disk"
+    bl_description = "Move selected files to the trash or recycle bin"
     bl_options = {"REGISTER"}
 
     def invoke(self, context, event):
@@ -1123,12 +1176,9 @@ class QAS_OT_delete_selected_assets(Operator):
 
     def draw(self, context):
         layout = self.layout
-        layout.alert = True
         box = layout.box()
-        box.alert = True
         col = box.column(align=True)
-        col.label(text="Delete Selected Assets?", icon="ERROR")
-        col.label(text="This is PERMANENT and CAN'T be undone!")
+        col.label(text="Move selected files to the trash or recycle bin", icon="TRASH")
 
     @classmethod
     def poll(cls, context):
@@ -1139,7 +1189,6 @@ class QAS_OT_delete_selected_assets(Operator):
         )
 
     def execute(self, context):
-        prefs = get_addon_preferences()
         selected_paths, active_library = collect_selected_asset_files(context)
         if not selected_paths:
             self.report({"WARNING"}, "No assets selected")
@@ -1150,26 +1199,384 @@ class QAS_OT_delete_selected_assets(Operator):
 
         for p in selected_paths:
             try:
-                p.unlink()
+                send2trash(str(p))
                 deleted += 1
-            except (OSError, PermissionError) as e:
-                print(f"Failed to delete {p.name}: {e}")
+            except Exception as e:
+                print(f"Failed to send {p.name} to trash: {e}")
                 failed += 1
 
-        # Refresh asset browser
-        if prefs and prefs.auto_refresh:
-            try:
-                if hasattr(bpy.ops.asset, "library_refresh"):
-                    bpy.ops.asset.library_refresh()
-                elif hasattr(bpy.ops.asset, "refresh"):
-                    bpy.ops.asset.refresh()
-            except (RuntimeError, AttributeError):
-                pass
+        # Always refresh asset browser after delete
+        refresh_asset_browser(context)
 
         if failed:
-            self.report({"WARNING"}, f"Deleted {deleted}, failed {failed}")
+            self.report({"WARNING"}, f"Sent {deleted} to trash, failed {failed}")
         else:
-            self.report({"INFO"}, f"Deleted {deleted} file(s)")
+            self.report({"INFO"}, f"Sent {deleted} file(s) to trash")
+        return {"FINISHED"}
+
+
+class QAS_OT_edit_selected_asset(Operator):
+    """Edit the name and/or tags of a selected asset."""
+
+    bl_idname = "qas.edit_selected_asset"
+    bl_label = "Apply Changes"
+    bl_description = "Update the name and tags of the selected asset"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            hasattr(context, "space_data")
+            and context.space_data.type == "FILE_BROWSER"
+            and getattr(context.space_data, "browse_mode", None) == "ASSETS"
+        )
+
+    def execute(self, context):
+        wm = context.window_manager
+        manage = getattr(wm, "qas_manage_props", None)
+        if not manage:
+            self.report({"ERROR"}, "Internal properties missing")
+            return {"CANCELLED"}
+
+        selected_paths, active_library = collect_selected_asset_files(context)
+        if len(selected_paths) != 1:
+            self.report({"WARNING"}, "Select exactly one asset to edit")
+            return {"CANCELLED"}
+
+        blend_path = selected_paths[0]
+        new_name = manage.edit_asset_name.strip()
+        new_tags = manage.edit_asset_tags.strip()
+
+        if not new_name and not new_tags:
+            self.report({"WARNING"}, "Nothing to change")
+            return {"CANCELLED"}
+
+        try:
+            success = self._update_asset_in_blend(blend_path, new_name, new_tags)
+            if not success:
+                self.report({"ERROR"}, "Failed to update asset")
+                return {"CANCELLED"}
+        except Exception as e:
+            self.report({"ERROR"}, f"Error updating asset: {e}")
+            return {"CANCELLED"}
+
+        # If name changed, rename the file too
+        if new_name:
+            sanitized_name = sanitize_name(new_name)
+            new_path = blend_path.parent / f"{sanitized_name}.blend"
+            if new_path != blend_path:
+                if new_path.exists():
+                    self.report({"WARNING"}, f"File {new_path.name} already exists")
+                else:
+                    try:
+                        blend_path.rename(new_path)
+                    except OSError as e:
+                        self.report({"WARNING"}, f"Could not rename file: {e}")
+
+        # Clear the edit fields
+        manage.edit_asset_name = ""
+        manage.edit_asset_tags = ""
+
+        # Always refresh asset browser after edit
+        refresh_asset_browser(context)
+
+        self.report({"INFO"}, "Asset updated")
+        return {"FINISHED"}
+
+    def _update_asset_in_blend(self, blend_path, new_name, new_tags):
+        """Update asset name and/or tags inside a .blend file."""
+        datablock_collections = [
+            'objects', 'materials', 'node_groups', 'worlds', 'collections',
+            'meshes', 'curves', 'armatures', 'actions', 'brushes',
+        ]
+
+        try:
+            # First pass: get names to import
+            names_to_import = {}
+            with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
+                for collection_name in datablock_collections:
+                    if hasattr(data_from, collection_name):
+                        source = getattr(data_from, collection_name)
+                        if source:
+                            names_to_import[collection_name] = list(source)
+
+            # Temporarily rename existing datablocks
+            renamed_existing = []
+            for collection_name, names in names_to_import.items():
+                if hasattr(bpy.data, collection_name):
+                    collection = getattr(bpy.data, collection_name)
+                    for name in names:
+                        if name in collection:
+                            existing_db = collection[name]
+                            temp_name = f"__QAS_TEMP_{name}_{id(existing_db)}"
+                            original_name = existing_db.name
+                            existing_db.name = temp_name
+                            renamed_existing.append((existing_db, original_name))
+
+            # Import
+            imported_datablocks = {}
+            asset_datablocks = set()
+
+            with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
+                for collection_name in datablock_collections:
+                    if hasattr(data_from, collection_name):
+                        source = getattr(data_from, collection_name)
+                        if source:
+                            setattr(data_to, collection_name, list(source))
+
+            # Process imported datablocks
+            for collection_name in names_to_import.keys():
+                if hasattr(data_to, collection_name):
+                    for db in getattr(data_to, collection_name):
+                        if db is not None:
+                            imported_datablocks[db.name] = db
+                            if hasattr(db, 'asset_data') and db.asset_data:
+                                # Update name if provided
+                                if new_name:
+                                    db.name = new_name
+                                # Update tags if provided
+                                if new_tags:
+                                    clear_and_set_tags(db.asset_data, new_tags)
+                                asset_datablocks.add(db)
+
+            if not asset_datablocks:
+                for db in imported_datablocks.values():
+                    self._remove_datablock(db)
+                for existing_db, original_name in renamed_existing:
+                    try:
+                        existing_db.name = original_name
+                    except Exception:
+                        pass
+                return False
+
+            # Write back
+            temp_path = blend_path.parent / f".tmp_{blend_path.name}"
+            bpy.data.libraries.write(
+                str(temp_path),
+                asset_datablocks,
+                path_remap="RELATIVE_ALL",
+                fake_user=True,
+                compress=True,
+            )
+
+            # Clean up
+            for db in imported_datablocks.values():
+                self._remove_datablock(db)
+            for existing_db, original_name in renamed_existing:
+                try:
+                    existing_db.name = original_name
+                except Exception:
+                    pass
+
+            # Replace original
+            if temp_path.exists():
+                if blend_path.exists():
+                    blend_path.unlink()
+                shutil.move(str(temp_path), str(blend_path))
+                return True
+
+        except (RuntimeError, IOError, OSError) as e:
+            print(f"Failed to update asset in {blend_path.name}: {e}")
+            try:
+                temp_path = blend_path.parent / f".tmp_{blend_path.name}"
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+
+        return False
+
+    def _remove_datablock(self, datablock):
+        """Remove a datablock from the current session."""
+        try:
+            if isinstance(datablock, bpy.types.Object):
+                bpy.data.objects.remove(datablock)
+            elif isinstance(datablock, bpy.types.Material):
+                bpy.data.materials.remove(datablock)
+            elif isinstance(datablock, bpy.types.NodeTree):
+                bpy.data.node_groups.remove(datablock)
+            elif isinstance(datablock, bpy.types.World):
+                bpy.data.worlds.remove(datablock)
+            elif isinstance(datablock, bpy.types.Collection):
+                bpy.data.collections.remove(datablock)
+            elif isinstance(datablock, bpy.types.Mesh):
+                bpy.data.meshes.remove(datablock)
+            elif isinstance(datablock, bpy.types.Curve):
+                bpy.data.curves.remove(datablock)
+            elif isinstance(datablock, bpy.types.Armature):
+                bpy.data.armatures.remove(datablock)
+            elif isinstance(datablock, bpy.types.Action):
+                bpy.data.actions.remove(datablock)
+            elif isinstance(datablock, bpy.types.Brush):
+                bpy.data.brushes.remove(datablock)
+        except (RuntimeError, ReferenceError):
+            pass
+
+
+class QAS_OT_swap_selected_with_asset(Operator):
+    """Swap selected scene objects with the selected asset from the library."""
+
+    bl_idname = "qas.swap_selected_with_asset"
+    bl_label = "Swap Asset"
+    bl_description = "Replace selected objects in the scene with the selected asset"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context):
+        # Check if in asset browser
+        if not (hasattr(context, "space_data")
+            and context.space_data.type == "FILE_BROWSER"
+            and getattr(context.space_data, "browse_mode", None) == "ASSETS"):
+            return False
+        
+        # Check if at least one object is selected in the scene
+        has_selected = False
+        for obj in bpy.data.objects:
+            if obj.select_get():
+                has_selected = True
+                break
+        
+        return has_selected
+
+    def execute(self, context):
+        wm = context.window_manager
+        manage = getattr(wm, "qas_manage_props", None)
+        link_mode = manage.swap_link_mode if manage else "APPEND"
+        use_link = link_mode == "LINK"
+
+        # Get the selected asset from asset browser
+        selected_paths, _ = collect_selected_asset_files(context)
+        if len(selected_paths) != 1:
+            self.report({"WARNING"}, "Select exactly one asset to swap")
+            return {"CANCELLED"}
+
+        asset_path = selected_paths[0]
+
+        # Get selected objects in the scene
+        scene_objects = []
+        for obj in bpy.data.objects:
+            if obj.select_get():
+                scene_objects.append(obj)
+
+        if not scene_objects:
+            self.report({"WARNING"}, "No objects selected in scene")
+            return {"CANCELLED"}
+
+        # Store world matrices of selected objects
+        transforms = []
+        for obj in scene_objects:
+            transforms.append({
+                'matrix_world': obj.matrix_world.copy(),
+            })
+
+        # Import the asset
+        imported_objects = []
+        
+        try:
+            # Check what's in the file and import
+            with bpy.data.libraries.load(str(asset_path), link=use_link) as (data_from, data_to):
+                # Check if there are objects or collections
+                has_objects = len(data_from.objects) > 0 if hasattr(data_from, 'objects') else False
+                has_collections = len(data_from.collections) > 0 if hasattr(data_from, 'collections') else False
+                
+                if not has_objects and not has_collections:
+                    self.report({"ERROR"}, "Asset contains no objects or collections (brushes/materials not supported)")
+                    return {"CANCELLED"}
+                
+                # Import all objects
+                if has_objects:
+                    data_to.objects = list(data_from.objects)
+
+            # Link imported content to the active collection
+            active_collection = context.view_layer.active_layer_collection.collection
+            
+            # Link all imported objects
+            if hasattr(data_to, 'objects'):
+                for obj in data_to.objects:
+                    if obj is not None:
+                        active_collection.objects.link(obj)
+                        imported_objects.append(obj)
+
+        except Exception as e:
+            self.report({"ERROR"}, f"Failed to import asset: {e}")
+            return {"CANCELLED"}
+
+        if not imported_objects:
+            self.report({"ERROR"}, "No objects found in asset file")
+            return {"CANCELLED"}
+
+        # Force update so matrix_world is valid
+        context.view_layer.update()
+
+        # Find root objects (no parent, or parent not in imported set)
+        root_objects = [obj for obj in imported_objects if obj.parent is None or obj.parent not in imported_objects]
+        
+        # Calculate center of root objects only
+        original_center = mathutils.Vector((0.0, 0.0, 0.0))
+        for obj in root_objects:
+            original_center += obj.location.copy()
+        if root_objects:
+            original_center /= len(root_objects)
+
+        # Store each ROOT object's offset from center (children follow automatically)
+        # Use index to track offsets since duplicate names change
+        root_indices = [imported_objects.index(obj) for obj in root_objects]
+        root_offsets = [obj.location.copy() - original_center for obj in root_objects]
+
+        # For each original scene object, place a copy of the imported asset at its location
+        all_swapped_objects = []
+        for i, transform_data in enumerate(transforms):
+            # Get target position from the original object's world matrix
+            target_pos = transform_data['matrix_world'].translation.copy()
+
+            if i == 0:
+                # First target: move the imported objects directly
+                objs_to_place = imported_objects
+                # Only move root objects - children follow via parenting
+                for root_obj, offset in zip(root_objects, root_offsets):
+                    root_obj.location = target_pos + offset
+            else:
+                # Subsequent targets: duplicate all imported objects
+                objs_to_place = []
+                old_to_new = {}  # Map original objects to their duplicates
+                
+                for obj in imported_objects:
+                    if use_link:
+                        new_obj = obj.copy()
+                    else:
+                        new_obj = obj.copy()
+                        if obj.data:
+                            new_obj.data = obj.data.copy()
+                    active_collection.objects.link(new_obj)
+                    old_to_new[obj] = new_obj
+                    objs_to_place.append(new_obj)
+                
+                # Re-establish parent relationships for duplicates
+                for obj in imported_objects:
+                    if obj.parent and obj.parent in old_to_new:
+                        old_to_new[obj].parent = old_to_new[obj.parent]
+                        old_to_new[obj].matrix_parent_inverse = obj.matrix_parent_inverse.copy()
+                
+                # Move only the root duplicates
+                for idx, offset in zip(root_indices, root_offsets):
+                    new_root = old_to_new[imported_objects[idx]]
+                    new_root.location = target_pos + offset
+
+            all_swapped_objects.extend(objs_to_place)
+
+        # Delete original objects
+        for obj in scene_objects:
+            bpy.data.objects.remove(obj, do_unlink=True)
+
+        # Select the newly placed objects
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in all_swapped_objects:
+            obj.select_set(True)
+        if all_swapped_objects:
+            context.view_layer.objects.active = all_swapped_objects[0]
+
+        mode_str = "linked" if use_link else "appended"
+        self.report({"INFO"}, f"Swapped {len(transforms)} object(s) ({mode_str})")
         return {"FINISHED"}
 
 
@@ -1327,18 +1734,7 @@ class QAS_OT_save_asset_to_library_direct(Operator):
 
         # Refresh Asset Browser if enabled
         if prefs.auto_refresh:
-            try:
-                if hasattr(bpy.ops.asset, "library_refresh"):
-                    bpy.ops.asset.library_refresh()
-                elif hasattr(bpy.ops.asset, "refresh"):
-                    bpy.ops.asset.refresh()
-                else:
-                    self.report(
-                        {"WARNING"},
-                        "Asset browser refresh not available. Please refresh manually.",
-                    )
-            except (RuntimeError, AttributeError) as e:
-                print(f"Could not refresh asset browser: {e}")
+            refresh_asset_browser(context)
 
         return {"FINISHED"}
 
@@ -1939,6 +2335,8 @@ classes = (
     QAS_OT_open_library_folder,
     QAS_OT_move_selected_to_library,
     QAS_OT_delete_selected_assets,
+    QAS_OT_edit_selected_asset,
+    QAS_OT_swap_selected_with_asset,
     QAS_OT_bundle_assets,
     QAS_OT_open_bundle_folder,
 )
