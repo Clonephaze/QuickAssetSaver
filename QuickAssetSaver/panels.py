@@ -286,6 +286,7 @@ class QAS_PT_asset_bundler(bpy.types.Panel):
     bl_space_type = "FILE_BROWSER"
     bl_region_type = "TOOLS"
     bl_category = "Assets"
+    bl_order = 2
 
     @classmethod
     def poll(cls, context):
@@ -496,6 +497,7 @@ class QAS_PT_asset_manage(bpy.types.Panel):
     bl_space_type = "FILE_BROWSER"
     bl_region_type = "TOOLS"
     bl_category = "Assets"
+    bl_order = 1
 
     @classmethod
     def poll(cls, context):
@@ -604,44 +606,50 @@ class QAS_PT_asset_manage(bpy.types.Panel):
             move_row.enabled = selected_count > 0
             move_row.operator("qas.move_selected_to_library", text="Move", icon="EXPORT")
 
-        layout.separator()
 
-        # ============ REPLACE SECTION (before delete) ============
-        layout.label(text="Replace", icon="UV_SYNC_SELECT")
-        box = layout.box()
-        col = box.column(align=True)
-        col.scale_y = 0.7
-        col.label(text="Replace selected scene objects")
-        col.label(text="with the selected asset")
-        if manage:
-            box.prop(manage, "swap_link_mode", text="Mode")
-        swap_row = box.row()
-        swap_row.scale_y = 1.1
-        swap_row.enabled = selected_count == 1
-        swap_row.operator("qas.swap_selected_with_asset", text="Replace", icon="FILE_REFRESH")
+class QAS_MT_asset_context_menu(bpy.types.Menu):
+    """Quick Asset Saver context menu items for the Asset Browser."""
+    bl_idname = "QAS_MT_asset_context_menu"
+    bl_label = "Quick Asset Saver"
 
-        layout.separator()
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("qas.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
 
-        # ============ DELETE SECTION (bottom) ============
-        del_row = layout.row()
-        del_row.enabled = selected_count > 0
-        del_row.operator("qas.delete_selected_assets", text="Delete Selected Files", icon="TRASH")
+
+def draw_asset_context_menu(self, context):
+    """Append Quick Asset Saver options to the Asset Browser context menu."""
+    # Only show in Asset Browser
+    if not hasattr(context, "space_data") or context.space_data.type != "FILE_BROWSER":
+        return
+    if getattr(context.space_data, "browse_mode", None) != "ASSETS":
+        return
+    
+    layout = self.layout
+    layout.separator()
+    layout.operator("qas.swap_selected_with_asset", text="Replace Selected Objects", icon="FILE_REFRESH")
+    layout.operator("qas.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
 
 
 classes = (
     QAS_PT_asset_tools_panel,
-    QAS_PT_asset_bundler,
     QAS_PT_asset_manage,
-    # New management panel for user libraries
-    
+    QAS_PT_asset_bundler,
+    QAS_MT_asset_context_menu,
 )
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    
+    # Append to Asset Browser context menu
+    bpy.types.ASSETBROWSER_MT_context_menu.append(draw_asset_context_menu)
 
 
 def unregister():
+    # Remove from Asset Browser context menu
+    bpy.types.ASSETBROWSER_MT_context_menu.remove(draw_asset_context_menu)
+    
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

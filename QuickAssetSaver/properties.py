@@ -770,17 +770,6 @@ class QAS_ManageProperties(PropertyGroup):
         default="INCREMENT",
     )
 
-    # Swap properties
-    swap_link_mode: EnumProperty(
-        name="Import Mode",
-        description="How to import the swapped asset",
-        items=[
-            ("APPEND", "Append", "Copy the asset data into the file", "APPEND_BLEND", 0),
-            ("LINK", "Link", "Link to the original asset file", "LINK_BLEND", 1),
-        ],
-        default="APPEND",
-    )
-
     # Internal tracking for edit field auto-population
     edit_last_selection: StringProperty(
         name="",

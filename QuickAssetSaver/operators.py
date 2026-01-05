@@ -577,11 +577,130 @@ def collect_external_dependencies(datablock):
     return dependencies
 
 
+def collect_selected_assets_with_names(context):
+    """Collect selected assets with their file paths AND datablock names.
+
+    Returns a tuple (assets, active_library) where:
+    - assets is a list of dicts: {'path': Path, 'name': str, 'id_type': str}
+    - active_library is the Blender preferences library object (or None)
+    
+    This is essential for asset-level operations in multi-asset .blend files.
+    """
+    assets = []
+    
+    # Resolve the active library
+    prefs = context.preferences
+    active_library = None
+    params = getattr(context.space_data, "params", None)
+    if params is not None:
+        asset_lib_ref = None
+        if hasattr(params, "asset_library_reference"):
+            asset_lib_ref = params.asset_library_reference
+        if not asset_lib_ref and hasattr(params, "asset_library_ref"):
+            asset_lib_ref = params.asset_library_ref
+        if asset_lib_ref and hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
+            for lib in prefs.filepaths.asset_libraries:
+                if getattr(lib, "name", None) == asset_lib_ref:
+                    active_library = lib
+                    break
+
+    library_path = Path(active_library.path) if active_library and getattr(active_library, "path", None) else None
+
+    # Gather selected asset files from context
+    asset_files = None
+    if hasattr(context, "selected_asset_files") and context.selected_asset_files is not None:
+        asset_files = context.selected_asset_files
+    elif hasattr(context, "selected_assets") and context.selected_assets is not None:
+        asset_files = context.selected_assets
+    elif hasattr(context.space_data, "files"):
+        try:
+            asset_files = [f for f in context.space_data.files if getattr(f, "select", False)]
+        except (AttributeError, TypeError, RuntimeError):
+            asset_files = None
+
+    if not asset_files:
+        return [], active_library
+
+    for asset_file in asset_files:
+        asset_path = None
+        asset_name = None
+        id_type = None
+        
+        # Get asset name (the datablock name, not the filename)
+        if hasattr(asset_file, "name"):
+            asset_name = asset_file.name
+        
+        # Get ID type if available (Object, Material, etc.)
+        if hasattr(asset_file, "id_type"):
+            id_type = asset_file.id_type
+        elif hasattr(asset_file, "asset_data") and hasattr(asset_file.asset_data, "id_type"):
+            id_type = asset_file.asset_data.id_type
+        
+        # Get file path
+        if hasattr(asset_file, "full_library_path") and asset_file.full_library_path:
+            asset_path = Path(asset_file.full_library_path)
+        elif hasattr(asset_file, "full_path") and asset_file.full_path:
+            asset_path = Path(asset_file.full_path)
+        elif hasattr(asset_file, "relative_path") and library_path:
+            asset_path = library_path / asset_file.relative_path
+        elif asset_name and library_path:
+            # Fallback: try to find the file
+            potential_path = library_path / (asset_name if asset_name.endswith(".blend") else f"{asset_name}.blend")
+            if potential_path.exists():
+                asset_path = potential_path
+
+        if asset_path and asset_path.exists() and asset_path.is_file() and asset_path.suffix.lower() == ".blend":
+            try:
+                if asset_path.stat().st_size > 100:
+                    assets.append({
+                        'path': asset_path,
+                        'name': asset_name,
+                        'id_type': id_type
+                    })
+            except Exception:
+                pass
+
+    return assets, active_library
+
+
+def count_assets_in_blend(blend_path):
+    """Count how many assets exist in a .blend file.
+    
+    Returns a dict with asset count and list of asset info:
+    {'count': int, 'assets': [{'name': str, 'type': str}, ...]}
+    """
+    datablock_collections = [
+        'objects', 'materials', 'node_groups', 'worlds', 'collections',
+        'meshes', 'curves', 'armatures', 'actions', 'brushes',
+    ]
+    
+    result = {'count': 0, 'assets': []}
+    
+    try:
+        with bpy.data.libraries.load(str(blend_path), link=False, assets_only=True) as (data_from, data_to):
+            for collection_name in datablock_collections:
+                if hasattr(data_from, collection_name):
+                    source = getattr(data_from, collection_name)
+                    if source:
+                        for name in source:
+                            result['assets'].append({
+                                'name': name,
+                                'type': collection_name
+                            })
+                            result['count'] += 1
+    except Exception as e:
+        debug_print(f"Error counting assets in {blend_path}: {e}")
+    
+    return result
+
+
 def collect_selected_asset_files(context):
     """Collect absolute Paths to selected asset .blend files in the active Asset Browser.
 
     Returns a tuple (asset_paths, active_library) where active_library is the
     Blender preferences library object for the current Asset Browser context (or None).
+    
+    Note: For asset-level operations, use collect_selected_assets_with_names() instead.
     """
     asset_paths = []
     asset_blend_files = set()
@@ -880,11 +999,11 @@ class QAS_OT_open_library_folder(Operator):
 
 
 class QAS_OT_move_selected_to_library(Operator):
-    """Move selected asset files to another library and optionally assign a catalog."""
+    """Move selected assets to another library - handles multi-asset files correctly."""
 
     bl_idname = "qas.move_selected_to_library"
     bl_label = "Move Assets"
-    bl_description = "Move selected assets to the target library and assign the chosen catalog"
+    bl_description = "Move selected assets to the target library (extracts from multi-asset files)"
     bl_options = {"REGISTER"}
 
     @classmethod
@@ -905,8 +1024,9 @@ class QAS_OT_move_selected_to_library(Operator):
             self.report({"ERROR"}, "Internal properties missing")
             return {"CANCELLED"}
 
-        selected_paths, active_library = collect_selected_asset_files(context)
-        if not selected_paths:
+        # Use the new function that gives us asset names
+        selected_assets, active_library = collect_selected_assets_with_names(context)
+        if not selected_assets:
             self.report({"WARNING"}, "No assets selected")
             return {"CANCELLED"}
 
@@ -946,90 +1066,306 @@ class QAS_OT_move_selected_to_library(Operator):
             return {"CANCELLED"}
 
         moved = 0
+        extracted = 0
         skipped = 0
-        catalog_updated = 0
         
-        for src in selected_paths:
+        # Group assets by source file
+        files_to_process = {}
+        for asset in selected_assets:
+            path = asset['path']
+            if path not in files_to_process:
+                files_to_process[path] = {
+                    'asset_info': count_assets_in_blend(path),
+                    'selected_assets': []
+                }
+            files_to_process[path]['selected_assets'].append(asset['name'])
+        
+        catalog_to_set = "" if target_catalog_uuid == "UNASSIGNED" else target_catalog_uuid
+        
+        for src_path, info in files_to_process.items():
+            total_assets = info['asset_info']['count']
+            selected_names = info['selected_assets']
+            
             try:
-                # Update catalog inside the source file BEFORE moving
-                # For UNASSIGNED, we pass empty string to clear the catalog
-                catalog_to_set = "" if target_catalog_uuid == "UNASSIGNED" else target_catalog_uuid
-                if self._update_catalog_in_blend(src, catalog_to_set):
-                    catalog_updated += 1
-                
-                # Build destination path
-                dest = dest_base / src.name
-                
-                # Check if source and destination are the same location
-                same_location = False
-                try:
-                    same_location = src.resolve() == dest.resolve()
-                except Exception:
-                    pass
+                if total_assets <= 1 or len(selected_names) >= total_assets:
+                    # Single-asset file OR all assets selected - move the whole file
+                    # Update catalog first
+                    self._update_catalog_in_blend(src_path, catalog_to_set, target_names=None)
                     
-                if same_location:
-                    # Same location - catalog already updated above, just skip the move
-                    skipped += 1
-                    continue
-                
-                # Create destination folder structure
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                
-                # Check for conflicts ONLY if a different file exists at destination
-                if dest.exists():
-                    mode = manage.move_conflict_resolution
-                    if mode == "INCREMENT":
-                        # Only increment if there's actually a different file there
-                        dest = increment_filename(dest.parent, dest.stem, dest.suffix)
-                    elif mode == "CANCEL":
+                    dest = dest_base / src_path.name
+                    
+                    # Check if same location
+                    same_location = False
+                    try:
+                        same_location = src_path.resolve() == dest.resolve()
+                    except Exception:
+                        pass
+                    
+                    if same_location:
                         skipped += 1
                         continue
-                    elif mode == "OVERWRITE":
-                        # Remove existing file before move
-                        dest.unlink()
-                
-                # Move the file
-                shutil.move(str(src), str(dest))
-                moved += 1
+                    
+                    # Handle conflicts
+                    if dest.exists():
+                        mode = manage.move_conflict_resolution
+                        if mode == "INCREMENT":
+                            dest = increment_filename(dest.parent, dest.stem, dest.suffix)
+                        elif mode == "CANCEL":
+                            skipped += 1
+                            continue
+                        elif mode == "OVERWRITE":
+                            dest.unlink()
+                    
+                    shutil.move(str(src_path), str(dest))
+                    moved += 1
+                else:
+                    # Multi-asset file with partial selection - extract selected assets
+                    for asset_name in selected_names:
+                        try:
+                            # Create new file with just this asset
+                            dest_filename = f"{sanitize_name(asset_name)}.blend"
+                            dest = dest_base / dest_filename
+                            
+                            # Handle conflicts
+                            if dest.exists():
+                                mode = manage.move_conflict_resolution
+                                if mode == "INCREMENT":
+                                    dest = increment_filename(dest.parent, sanitize_name(asset_name), ".blend")
+                                elif mode == "CANCEL":
+                                    skipped += 1
+                                    continue
+                                elif mode == "OVERWRITE":
+                                    dest.unlink()
+                            
+                            # Extract asset to new file
+                            success = self._extract_asset_to_file(
+                                src_path, asset_name, dest, catalog_to_set
+                            )
+                            
+                            if success:
+                                # Remove asset from source file
+                                self._remove_asset_from_source(src_path, asset_name)
+                                extracted += 1
+                            else:
+                                skipped += 1
+                        except Exception as e:
+                            print(f"Failed to extract {asset_name}: {e}")
+                            skipped += 1
+                            
             except Exception as e:
-                print(f"Failed to move {src.name}: {e}")
-                skipped += 1
+                print(f"Failed to process {src_path.name}: {e}")
+                skipped += len(selected_names)
 
         # Force refresh asset browser
         refresh_asset_browser(context)
 
-        msg = f"Moved {moved} file(s)"
-        if catalog_updated:
-            msg += f", catalog set on {catalog_updated}"
+        msg_parts = []
+        if moved:
+            msg_parts.append(f"moved {moved} file(s)")
+        if extracted:
+            msg_parts.append(f"extracted {extracted} asset(s)")
         if skipped:
-            msg += f", skipped {skipped}"
-        self.report({"INFO"}, msg)
+            msg_parts.append(f"skipped {skipped}")
+        
+        self.report({"INFO"}, ", ".join(msg_parts) if msg_parts else "No changes made")
         return {"FINISHED"}
 
-    def _update_catalog_in_blend(self, blend_path, catalog_uuid):
-        """
-        Open a .blend file, set catalog_id on all asset datablocks, and save.
+    def _extract_asset_to_file(self, src_path, asset_name, dest_path, catalog_uuid):
+        """Extract a single asset from a multi-asset file into a new file.
         
         Args:
-            blend_path: Path to the .blend file
-            catalog_uuid: UUID string for the target catalog
+            src_path: Source .blend file path
+            asset_name: Name of the asset to extract
+            dest_path: Destination .blend file path
+            catalog_uuid: Catalog UUID to assign (or empty string)
             
         Returns:
             bool: True if successful
         """
-        # We need to import assets, modify them, then write back
-        # This is tricky because we can't directly edit external files
-        # Strategy: load datablocks, modify catalog_id, write to temp, replace original
+        datablock_collections = [
+            'objects', 'materials', 'node_groups', 'worlds', 'collections',
+            'meshes', 'curves', 'armatures', 'actions', 'brushes',
+        ]
         
         try:
-            # Collections to check for assets
+            # First pass: find which collection has our target
+            target_collection = None
+            with bpy.data.libraries.load(str(src_path), link=False, assets_only=True) as (data_from, data_to):
+                for collection_name in datablock_collections:
+                    if hasattr(data_from, collection_name):
+                        source = getattr(data_from, collection_name)
+                        if source and asset_name in source:
+                            target_collection = collection_name
+                            break
+            
+            if not target_collection:
+                print(f"Asset '{asset_name}' not found in {src_path.name}")
+                return False
+            
+            # Rename existing datablocks to avoid conflicts
+            renamed_existing = []
+            if hasattr(bpy.data, target_collection):
+                collection = getattr(bpy.data, target_collection)
+                if asset_name in collection:
+                    existing_db = collection[asset_name]
+                    temp_name = f"__QAS_EXTRACT_TEMP_{asset_name}_{id(existing_db)}"
+                    original_name = existing_db.name
+                    existing_db.name = temp_name
+                    renamed_existing.append((existing_db, original_name))
+            
+            # Import only the target asset
+            with bpy.data.libraries.load(str(src_path), link=False, assets_only=False) as (data_from, data_to):
+                setattr(data_to, target_collection, [asset_name])
+            
+            # Find the imported datablock
+            target_db = None
+            if hasattr(bpy.data, target_collection):
+                collection = getattr(bpy.data, target_collection)
+                if asset_name in collection:
+                    target_db = collection[asset_name]
+            
+            if not target_db or not target_db.asset_data:
+                # Clean up
+                if target_db:
+                    self._remove_datablock(target_db)
+                for existing_db, original_name in renamed_existing:
+                    try:
+                        existing_db.name = original_name
+                    except Exception:
+                        pass
+                return False
+            
+            # Set catalog
+            if catalog_uuid:
+                target_db.asset_data.catalog_id = catalog_uuid
+            
+            # Write to destination
+            bpy.data.libraries.write(
+                str(dest_path),
+                {target_db},
+                path_remap="RELATIVE_ALL",
+                fake_user=True,
+                compress=True,
+            )
+            
+            # Clean up
+            self._remove_datablock(target_db)
+            for existing_db, original_name in renamed_existing:
+                try:
+                    existing_db.name = original_name
+                except Exception:
+                    pass
+            
+            return dest_path.exists()
+            
+        except Exception as e:
+            print(f"Error extracting asset: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def _remove_asset_from_source(self, src_path, asset_name):
+        """Remove an asset from the source file after extraction.
+        
+        Uses asset_clear() to unmark the asset, preserving the datablock
+        in case other assets depend on it.
+        """
+        datablock_collections = [
+            'objects', 'materials', 'node_groups', 'worlds', 'collections',
+            'meshes', 'curves', 'armatures', 'actions', 'brushes',
+        ]
+        
+        try:
+            # Get all datablocks
+            names_to_import = {}
+            with bpy.data.libraries.load(str(src_path), link=False, assets_only=False) as (data_from, data_to):
+                for collection_name in datablock_collections:
+                    if hasattr(data_from, collection_name):
+                        source = getattr(data_from, collection_name)
+                        if source:
+                            names_to_import[collection_name] = list(source)
+            
+            # Rename existing
+            renamed_existing = []
+            for collection_name, names in names_to_import.items():
+                if hasattr(bpy.data, collection_name):
+                    collection = getattr(bpy.data, collection_name)
+                    for name in names:
+                        if name in collection:
+                            existing_db = collection[name]
+                            temp_name = f"__QAS_MOVE_TEMP_{name}_{id(existing_db)}"
+                            original_name = existing_db.name
+                            existing_db.name = temp_name
+                            renamed_existing.append((existing_db, original_name))
+            
+            # Import all
+            with bpy.data.libraries.load(str(src_path), link=False, assets_only=False) as (data_from, data_to):
+                for collection_name in datablock_collections:
+                    if hasattr(data_from, collection_name):
+                        source = getattr(data_from, collection_name)
+                        if source:
+                            setattr(data_to, collection_name, list(source))
+            
+            # Clear asset status on target
+            imported_datablocks = set()
+            for collection_name in names_to_import.keys():
+                if hasattr(bpy.data, collection_name):
+                    collection = getattr(bpy.data, collection_name)
+                    for name in names_to_import[collection_name]:
+                        if name in collection:
+                            db = collection[name]
+                            imported_datablocks.add(db)
+                            
+                            if name == asset_name and hasattr(db, 'asset_clear'):
+                                db.asset_clear()
+            
+            # Write back
+            temp_path = src_path.parent / f".tmp_{src_path.name}"
+            bpy.data.libraries.write(
+                str(temp_path),
+                imported_datablocks,
+                path_remap="RELATIVE_ALL",
+                fake_user=True,
+                compress=True,
+            )
+            
+            # Clean up
+            for db in list(imported_datablocks):
+                self._remove_datablock(db)
+            for existing_db, original_name in renamed_existing:
+                try:
+                    existing_db.name = original_name
+                except Exception:
+                    pass
+            
+            # Replace
+            if temp_path.exists():
+                if src_path.exists():
+                    src_path.unlink()
+                shutil.move(str(temp_path), str(src_path))
+                
+        except Exception as e:
+            print(f"Error removing asset from source: {e}")
+
+    def _update_catalog_in_blend(self, blend_path, catalog_uuid, target_names=None):
+        """Update catalog on specific assets (or all if target_names is None).
+        
+        Args:
+            blend_path: Path to the .blend file
+            catalog_uuid: UUID string for the target catalog
+            target_names: List of asset names to update, or None for all
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
             datablock_collections = [
                 'objects', 'materials', 'node_groups', 'worlds', 'collections',
                 'meshes', 'curves', 'armatures', 'actions', 'brushes',
             ]
             
             # First pass: get the names we're about to import
-            names_to_import = {}  # collection_name -> list of names
+            names_to_import = {}
             with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
                 for collection_name in datablock_collections:
                     if hasattr(data_from, collection_name):
@@ -1038,22 +1374,19 @@ class QAS_OT_move_selected_to_library(Operator):
                             names_to_import[collection_name] = list(source)
             
             # Temporarily rename any existing datablocks that would conflict
-            renamed_existing = []  # List of (datablock, original_name)
+            renamed_existing = []
             for collection_name, names in names_to_import.items():
                 if hasattr(bpy.data, collection_name):
                     collection = getattr(bpy.data, collection_name)
                     for name in names:
                         if name in collection:
                             existing_db = collection[name]
-                            temp_name = f"__QAS_TEMP_{name}_{id(existing_db)}"
+                            temp_name = f"__QAS_CAT_TEMP_{name}_{id(existing_db)}"
                             original_name = existing_db.name
                             existing_db.name = temp_name
                             renamed_existing.append((existing_db, original_name))
             
-            # Now import - datablocks will get their original names without incrementing
-            imported_datablocks = {}  # original_name -> datablock
-            asset_datablocks = set()
-            
+            # Import
             with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
                 for collection_name in datablock_collections:
                     if hasattr(data_from, collection_name):
@@ -1061,23 +1394,22 @@ class QAS_OT_move_selected_to_library(Operator):
                         if source:
                             setattr(data_to, collection_name, list(source))
             
-            # Process imported datablocks and update catalog
+            # Process - update catalog only on targets (or all if target_names is None)
+            imported_datablocks = set()
             for collection_name in names_to_import.keys():
-                if hasattr(data_to, collection_name):
-                    for db in getattr(data_to, collection_name):
-                        if db is not None:
-                            imported_datablocks[db.name] = db
+                if hasattr(bpy.data, collection_name):
+                    collection = getattr(bpy.data, collection_name)
+                    for name in names_to_import[collection_name]:
+                        if name in collection:
+                            db = collection[name]
+                            imported_datablocks.add(db)
                             
-                            # Check if it's marked as an asset
                             if hasattr(db, 'asset_data') and db.asset_data:
-                                db.asset_data.catalog_id = catalog_uuid
-                                asset_datablocks.add(db)
+                                # Update if targeting all or this specific asset
+                                if target_names is None or name in target_names:
+                                    db.asset_data.catalog_id = catalog_uuid
             
-            if not asset_datablocks:
-                # No assets found, clean up and return
-                for db in imported_datablocks.values():
-                    self._remove_datablock(db)
-                # Restore renamed datablocks
+            if not imported_datablocks:
                 for existing_db, original_name in renamed_existing:
                     try:
                         existing_db.name = original_name
@@ -1085,29 +1417,26 @@ class QAS_OT_move_selected_to_library(Operator):
                         pass
                 return False
             
-            # Write modified datablocks back to the file
+            # Write back
             temp_path = blend_path.parent / f".tmp_{blend_path.name}"
-            
             bpy.data.libraries.write(
                 str(temp_path),
-                asset_datablocks,
+                imported_datablocks,
                 path_remap="RELATIVE_ALL",
                 fake_user=True,
                 compress=True,
             )
             
-            # Clean up imported datablocks from current session
-            for db in imported_datablocks.values():
+            # Clean up
+            for db in list(imported_datablocks):
                 self._remove_datablock(db)
-            
-            # Restore renamed existing datablocks back to their original names
             for existing_db, original_name in renamed_existing:
                 try:
                     existing_db.name = original_name
                 except Exception:
                     pass
             
-            # Replace original with temp
+            # Replace
             if temp_path.exists():
                 if blend_path.exists():
                     blend_path.unlink()
@@ -1116,7 +1445,6 @@ class QAS_OT_move_selected_to_library(Operator):
                 
         except (RuntimeError, IOError, OSError) as e:
             print(f"Failed to update catalog in {blend_path.name}: {e}")
-            # Try to clean up temp file
             try:
                 temp_path = blend_path.parent / f".tmp_{blend_path.name}"
                 if temp_path.exists():
@@ -1127,15 +1455,7 @@ class QAS_OT_move_selected_to_library(Operator):
         return False
     
     def _remove_datablock(self, datablock):
-        """
-        Remove a datablock from the current session.
-        
-        Handles different datablock types and silently ignores removal failures.
-        Used during cleanup of temporarily imported assets.
-        
-        Args:
-            datablock: Blender datablock to remove
-        """
+        """Remove a datablock from the current session."""
         try:
             if isinstance(datablock, bpy.types.Object):
                 bpy.data.objects.remove(datablock)
@@ -1158,27 +1478,74 @@ class QAS_OT_move_selected_to_library(Operator):
             elif isinstance(datablock, bpy.types.Brush):
                 bpy.data.brushes.remove(datablock)
         except (RuntimeError, ReferenceError):
-            # Datablock may already be removed or invalid reference
+            pass
             pass
 
 
 class QAS_OT_delete_selected_assets(Operator):
-    """Move selected asset files to the system Recycle Bin / Trash"""
+    """Delete selected assets - handles both single and multi-asset files safely"""
 
     bl_idname = "qas.delete_selected_assets"
     bl_label = "Delete Selected Assets"
-    bl_description = "Move selected files to the trash or recycle bin"
+    bl_description = "Delete selected assets (removes from multi-asset files or sends single-asset files to trash)"
     bl_options = {"REGISTER"}
+    
+    # Store analysis results for display in dialog
+    _single_asset_files: list = []
+    _multi_asset_entries: list = []  # List of (path, asset_name, total_count)
 
     def invoke(self, context, event):
-        # Centered properties dialog with custom warning text
-        return context.window_manager.invoke_props_dialog(self, width=420)
+        # Analyze selection before showing dialog
+        self._single_asset_files = []
+        self._multi_asset_entries = []
+        
+        selected_assets, _ = collect_selected_assets_with_names(context)
+        if not selected_assets:
+            self.report({"WARNING"}, "No assets selected")
+            return {"CANCELLED"}
+        
+        # Group by file and analyze
+        files_analyzed = {}
+        for asset in selected_assets:
+            path = asset['path']
+            if path not in files_analyzed:
+                files_analyzed[path] = count_assets_in_blend(path)
+            
+            asset_count = files_analyzed[path]['count']
+            if asset_count <= 1:
+                self._single_asset_files.append(path)
+            else:
+                self._multi_asset_entries.append((path, asset['name'], asset_count))
+        
+        return context.window_manager.invoke_props_dialog(self, width=480)
 
     def draw(self, context):
         layout = self.layout
         box = layout.box()
         col = box.column(align=True)
-        col.label(text="Move selected files to the trash or recycle bin", icon="TRASH")
+        
+        if self._single_asset_files and not self._multi_asset_entries:
+            # Only single-asset files
+            col.label(text="Move selected files to the trash or recycle bin", icon="TRASH")
+            col.label(text=f"Files to delete: {len(self._single_asset_files)}")
+        elif self._multi_asset_entries and not self._single_asset_files:
+            # Only multi-asset files
+            col.label(text="Remove asset status from selected assets", icon="ASSET_MANAGER")
+            col.separator()
+            col.label(text="The following assets will be unmarked (file preserved):")
+            for path, name, count in self._multi_asset_entries[:5]:  # Show max 5
+                col.label(text=f"  • {name} (in {path.name}, {count} assets)", icon="DOT")
+            if len(self._multi_asset_entries) > 5:
+                col.label(text=f"  ... and {len(self._multi_asset_entries) - 5} more")
+        else:
+            # Mixed
+            col.label(text="Delete/Remove Selected Assets", icon="TRASH")
+            col.separator()
+            if self._single_asset_files:
+                col.label(text=f"Files to trash: {len(self._single_asset_files)}")
+            if self._multi_asset_entries:
+                col.label(text=f"Assets to unmark: {len(self._multi_asset_entries)}")
+                col.label(text="(Files with multiple assets are preserved)", icon="INFO")
 
     @classmethod
     def poll(cls, context):
@@ -1189,38 +1556,208 @@ class QAS_OT_delete_selected_assets(Operator):
         )
 
     def execute(self, context):
-        selected_paths, active_library = collect_selected_asset_files(context)
-        if not selected_paths:
+        selected_assets, _ = collect_selected_assets_with_names(context)
+        if not selected_assets:
             self.report({"WARNING"}, "No assets selected")
             return {"CANCELLED"}
 
-        deleted = 0
+        deleted_files = 0
+        unmarked_assets = 0
         failed = 0
-
-        for p in selected_paths:
-            try:
-                send2trash(str(p))
-                deleted += 1
-            except Exception as e:
-                print(f"Failed to send {p.name} to trash: {e}")
-                failed += 1
+        
+        # Group assets by file path
+        files_to_process = {}
+        for asset in selected_assets:
+            path = asset['path']
+            if path not in files_to_process:
+                files_to_process[path] = {
+                    'asset_info': count_assets_in_blend(path),
+                    'selected_assets': []
+                }
+            files_to_process[path]['selected_assets'].append(asset['name'])
+        
+        for path, info in files_to_process.items():
+            total_assets = info['asset_info']['count']
+            selected_names = info['selected_assets']
+            
+            if total_assets <= 1:
+                # Single asset file - send to trash
+                try:
+                    send2trash(str(path))
+                    deleted_files += 1
+                except Exception as e:
+                    print(f"Failed to send {path.name} to trash: {e}")
+                    failed += 1
+            else:
+                # Multi-asset file - remove asset status from selected assets only
+                try:
+                    success = self._remove_assets_from_blend(path, selected_names)
+                    if success:
+                        unmarked_assets += len(selected_names)
+                    else:
+                        failed += len(selected_names)
+                except Exception as e:
+                    print(f"Failed to modify {path.name}: {e}")
+                    failed += len(selected_names)
 
         # Always refresh asset browser after delete
         refresh_asset_browser(context)
 
+        # Report results
+        messages = []
+        if deleted_files:
+            messages.append(f"{deleted_files} file(s) sent to trash")
+        if unmarked_assets:
+            messages.append(f"{unmarked_assets} asset(s) removed")
         if failed:
-            self.report({"WARNING"}, f"Sent {deleted} to trash, failed {failed}")
+            messages.append(f"{failed} failed")
+        
+        if failed:
+            self.report({"WARNING"}, ", ".join(messages))
         else:
-            self.report({"INFO"}, f"Sent {deleted} file(s) to trash")
+            self.report({"INFO"}, ", ".join(messages))
         return {"FINISHED"}
+    
+    def _remove_assets_from_blend(self, blend_path, asset_names_to_remove):
+        """Remove asset status from specific datablocks in a multi-asset .blend file.
+        
+        Args:
+            blend_path: Path to the .blend file
+            asset_names_to_remove: List of asset names to unmark
+            
+        Returns:
+            bool: True if successful
+        """
+        datablock_collections = [
+            'objects', 'materials', 'node_groups', 'worlds', 'collections',
+            'meshes', 'curves', 'armatures', 'actions', 'brushes',
+        ]
+        
+        try:
+            # Temporarily rename existing datablocks to avoid conflicts
+            renamed_existing = []
+            
+            # First pass: get names to import
+            names_to_import = {}
+            with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
+                for collection_name in datablock_collections:
+                    if hasattr(data_from, collection_name):
+                        source = getattr(data_from, collection_name)
+                        if source:
+                            names_to_import[collection_name] = list(source)
+            
+            # Rename existing datablocks
+            for collection_name, names in names_to_import.items():
+                if hasattr(bpy.data, collection_name):
+                    collection = getattr(bpy.data, collection_name)
+                    for name in names:
+                        if name in collection:
+                            existing_db = collection[name]
+                            temp_name = f"__QAS_DEL_TEMP_{name}_{id(existing_db)}"
+                            original_name = existing_db.name
+                            existing_db.name = temp_name
+                            renamed_existing.append((existing_db, original_name))
+            
+            # Import all datablocks
+            with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
+                for collection_name in datablock_collections:
+                    if hasattr(data_from, collection_name):
+                        source = getattr(data_from, collection_name)
+                        if source:
+                            setattr(data_to, collection_name, list(source))
+            
+            # Process imported datablocks - clear asset status on targets
+            imported_datablocks = set()
+            for collection_name in names_to_import.keys():
+                if hasattr(bpy.data, collection_name):
+                    collection = getattr(bpy.data, collection_name)
+                    for name in names_to_import[collection_name]:
+                        if name in collection:
+                            db = collection[name]
+                            imported_datablocks.add(db)
+                            
+                            # Check if this asset should be removed
+                            if name in asset_names_to_remove:
+                                if hasattr(db, 'asset_clear'):
+                                    db.asset_clear()
+                                    debug_print(f"Cleared asset status from: {name}")
+            
+            # Write all datablocks back (including the now-non-asset ones)
+            temp_path = blend_path.parent / f".tmp_{blend_path.name}"
+            bpy.data.libraries.write(
+                str(temp_path),
+                imported_datablocks,
+                path_remap="RELATIVE_ALL",
+                fake_user=True,
+                compress=True,
+            )
+            
+            # Clean up imported datablocks
+            for db in list(imported_datablocks):
+                self._remove_datablock_safe(db)
+            
+            # Restore renamed existing datablocks
+            for existing_db, original_name in renamed_existing:
+                try:
+                    existing_db.name = original_name
+                except Exception:
+                    pass
+            
+            # Replace original file
+            if temp_path.exists():
+                if blend_path.exists():
+                    blend_path.unlink()
+                shutil.move(str(temp_path), str(blend_path))
+                return True
+                
+        except Exception as e:
+            print(f"Error removing assets from {blend_path.name}: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Clean up temp file if it exists
+            try:
+                temp_path = blend_path.parent / f".tmp_{blend_path.name}"
+                if temp_path.exists():
+                    temp_path.unlink()
+            except OSError:
+                pass
+        
+        return False
+    
+    def _remove_datablock_safe(self, datablock):
+        """Safely remove a datablock from the current session."""
+        try:
+            if isinstance(datablock, bpy.types.Object):
+                bpy.data.objects.remove(datablock)
+            elif isinstance(datablock, bpy.types.Material):
+                bpy.data.materials.remove(datablock)
+            elif isinstance(datablock, bpy.types.NodeTree):
+                bpy.data.node_groups.remove(datablock)
+            elif isinstance(datablock, bpy.types.World):
+                bpy.data.worlds.remove(datablock)
+            elif isinstance(datablock, bpy.types.Collection):
+                bpy.data.collections.remove(datablock)
+            elif isinstance(datablock, bpy.types.Mesh):
+                bpy.data.meshes.remove(datablock)
+            elif isinstance(datablock, bpy.types.Curve):
+                bpy.data.curves.remove(datablock)
+            elif isinstance(datablock, bpy.types.Armature):
+                bpy.data.armatures.remove(datablock)
+            elif isinstance(datablock, bpy.types.Action):
+                bpy.data.actions.remove(datablock)
+            elif isinstance(datablock, bpy.types.Brush):
+                bpy.data.brushes.remove(datablock)
+        except (RuntimeError, ReferenceError):
+            pass
 
 
 class QAS_OT_edit_selected_asset(Operator):
-    """Edit the name and/or tags of a selected asset."""
+    """Edit the name and/or tags of a selected asset - works correctly with multi-asset files."""
 
     bl_idname = "qas.edit_selected_asset"
     bl_label = "Apply Changes"
-    bl_description = "Update the name and tags of the selected asset"
+    bl_description = "Update the name and tags of the selected asset (safe for multi-asset files)"
     bl_options = {"REGISTER"}
 
     @classmethod
@@ -1238,12 +1775,16 @@ class QAS_OT_edit_selected_asset(Operator):
             self.report({"ERROR"}, "Internal properties missing")
             return {"CANCELLED"}
 
-        selected_paths, active_library = collect_selected_asset_files(context)
-        if len(selected_paths) != 1:
+        # Use the new function that gives us both path AND asset name
+        selected_assets, active_library = collect_selected_assets_with_names(context)
+        if len(selected_assets) != 1:
             self.report({"WARNING"}, "Select exactly one asset to edit")
             return {"CANCELLED"}
 
-        blend_path = selected_paths[0]
+        asset_info = selected_assets[0]
+        blend_path = asset_info['path']
+        target_asset_name = asset_info['name']
+        
         new_name = manage.edit_asset_name.strip()
         new_tags = manage.edit_asset_tags.strip()
 
@@ -1251,17 +1792,29 @@ class QAS_OT_edit_selected_asset(Operator):
             self.report({"WARNING"}, "Nothing to change")
             return {"CANCELLED"}
 
+        # Check if this is a multi-asset file
+        asset_count_info = count_assets_in_blend(blend_path)
+        is_multi_asset = asset_count_info['count'] > 1
+
         try:
-            success = self._update_asset_in_blend(blend_path, new_name, new_tags)
+            success = self._update_asset_in_blend(
+                blend_path, 
+                target_asset_name,
+                new_name, 
+                new_tags,
+                is_multi_asset
+            )
             if not success:
                 self.report({"ERROR"}, "Failed to update asset")
                 return {"CANCELLED"}
         except Exception as e:
             self.report({"ERROR"}, f"Error updating asset: {e}")
+            import traceback
+            traceback.print_exc()
             return {"CANCELLED"}
 
-        # If name changed, rename the file too
-        if new_name:
+        # Only rename file if single-asset file AND name changed
+        if new_name and not is_multi_asset:
             sanitized_name = sanitize_name(new_name)
             new_path = blend_path.parent / f"{sanitized_name}.blend"
             if new_path != blend_path:
@@ -1283,8 +1836,19 @@ class QAS_OT_edit_selected_asset(Operator):
         self.report({"INFO"}, "Asset updated")
         return {"FINISHED"}
 
-    def _update_asset_in_blend(self, blend_path, new_name, new_tags):
-        """Update asset name and/or tags inside a .blend file."""
+    def _update_asset_in_blend(self, blend_path, target_asset_name, new_name, new_tags, is_multi_asset):
+        """Update a SPECIFIC asset's name and/or tags inside a .blend file.
+        
+        Args:
+            blend_path: Path to the .blend file
+            target_asset_name: Name of the specific asset to modify
+            new_name: New name for the asset (or None/empty to keep current)
+            new_tags: Comma-separated tags string (or None/empty to keep current)
+            is_multi_asset: Whether the file contains multiple assets
+            
+        Returns:
+            bool: True if successful
+        """
         datablock_collections = [
             'objects', 'materials', 'node_groups', 'worlds', 'collections',
             'meshes', 'curves', 'armatures', 'actions', 'brushes',
@@ -1300,7 +1864,7 @@ class QAS_OT_edit_selected_asset(Operator):
                         if source:
                             names_to_import[collection_name] = list(source)
 
-            # Temporarily rename existing datablocks
+            # Temporarily rename existing datablocks to avoid conflicts
             renamed_existing = []
             for collection_name, names in names_to_import.items():
                 if hasattr(bpy.data, collection_name):
@@ -1308,15 +1872,12 @@ class QAS_OT_edit_selected_asset(Operator):
                     for name in names:
                         if name in collection:
                             existing_db = collection[name]
-                            temp_name = f"__QAS_TEMP_{name}_{id(existing_db)}"
+                            temp_name = f"__QAS_EDIT_TEMP_{name}_{id(existing_db)}"
                             original_name = existing_db.name
                             existing_db.name = temp_name
                             renamed_existing.append((existing_db, original_name))
 
-            # Import
-            imported_datablocks = {}
-            asset_datablocks = set()
-
+            # Import all datablocks
             with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
                 for collection_name in datablock_collections:
                     if hasattr(data_from, collection_name):
@@ -1324,51 +1885,67 @@ class QAS_OT_edit_selected_asset(Operator):
                         if source:
                             setattr(data_to, collection_name, list(source))
 
-            # Process imported datablocks
+            # Process imported datablocks - only modify the TARGET asset
+            imported_datablocks = set()
+            target_found = False
+            
             for collection_name in names_to_import.keys():
-                if hasattr(data_to, collection_name):
-                    for db in getattr(data_to, collection_name):
-                        if db is not None:
-                            imported_datablocks[db.name] = db
-                            if hasattr(db, 'asset_data') and db.asset_data:
+                if hasattr(bpy.data, collection_name):
+                    collection = getattr(bpy.data, collection_name)
+                    for name in names_to_import[collection_name]:
+                        if name in collection:
+                            db = collection[name]
+                            imported_datablocks.add(db)
+                            
+                            # Only modify the specific target asset
+                            if name == target_asset_name and hasattr(db, 'asset_data') and db.asset_data:
+                                target_found = True
+                                debug_print(f"Found target asset: {name}")
+                                
                                 # Update name if provided
                                 if new_name:
                                     db.name = new_name
+                                    debug_print(f"  Renamed to: {new_name}")
+                                
                                 # Update tags if provided
                                 if new_tags:
                                     clear_and_set_tags(db.asset_data, new_tags)
-                                asset_datablocks.add(db)
+                                    debug_print(f"  Updated tags: {new_tags}")
 
-            if not asset_datablocks:
-                for db in imported_datablocks.values():
+            if not target_found:
+                # Clean up and return failure
+                for db in list(imported_datablocks):
                     self._remove_datablock(db)
                 for existing_db, original_name in renamed_existing:
                     try:
                         existing_db.name = original_name
                     except Exception:
                         pass
+                print(f"Target asset '{target_asset_name}' not found in {blend_path.name}")
                 return False
 
-            # Write back
+            # Write ALL datablocks back (preserves other assets unchanged)
             temp_path = blend_path.parent / f".tmp_{blend_path.name}"
             bpy.data.libraries.write(
                 str(temp_path),
-                asset_datablocks,
+                imported_datablocks,
                 path_remap="RELATIVE_ALL",
                 fake_user=True,
                 compress=True,
             )
 
-            # Clean up
-            for db in imported_datablocks.values():
+            # Clean up imported datablocks
+            for db in list(imported_datablocks):
                 self._remove_datablock(db)
+            
+            # Restore renamed existing datablocks
             for existing_db, original_name in renamed_existing:
                 try:
                     existing_db.name = original_name
                 except Exception:
                     pass
 
-            # Replace original
+            # Replace original file
             if temp_path.exists():
                 if blend_path.exists():
                     blend_path.unlink()
@@ -1377,6 +1954,9 @@ class QAS_OT_edit_selected_asset(Operator):
 
         except (RuntimeError, IOError, OSError) as e:
             print(f"Failed to update asset in {blend_path.name}: {e}")
+            import traceback
+            traceback.print_exc()
+            
             try:
                 temp_path = blend_path.parent / f".tmp_{blend_path.name}"
                 if temp_path.exists():
@@ -1417,8 +1997,8 @@ class QAS_OT_swap_selected_with_asset(Operator):
     """Swap selected scene objects with the selected asset from the library."""
 
     bl_idname = "qas.swap_selected_with_asset"
-    bl_label = "Swap Asset"
-    bl_description = "Replace selected objects in the scene with the selected asset"
+    bl_label = "Replace with Asset"
+    bl_description = "Replace selected objects in the scene with the selected asset (respects Asset Browser import settings)"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -1438,16 +2018,45 @@ class QAS_OT_swap_selected_with_asset(Operator):
         
         return has_selected
 
+    def _get_import_settings(self, context):
+        """Get import settings from Blender's Asset Browser.
+        
+        Returns:
+            tuple: (use_link: bool, instance_collections: bool)
+        """
+        space = context.space_data
+        use_link = False
+        instance_collections = False
+        
+        # Get import_method from asset browser params
+        # Options: 'FOLLOW_PREFS', 'LINK', 'APPEND', 'APPEND_REUSE'
+        import_method = getattr(space.params, 'import_method', 'FOLLOW_PREFS')
+        
+        if import_method == 'FOLLOW_PREFS':
+            # Check user preferences
+            prefs = context.preferences.filepaths
+            import_method = getattr(prefs, 'asset_import_method', 'APPEND')
+        
+        use_link = import_method == 'LINK'
+        
+        # Get collection instancing preference
+        # For linking, check if we should instance collections
+        if hasattr(space.params, 'import_method_collections'):
+            coll_method = space.params.import_method_collections
+            instance_collections = coll_method == 'INSTANCE'
+        elif hasattr(context.preferences.filepaths, 'collection_instance_empty'):
+            instance_collections = context.preferences.filepaths.collection_instance_empty
+        
+        return use_link, instance_collections
+
     def execute(self, context):
-        wm = context.window_manager
-        manage = getattr(wm, "qas_manage_props", None)
-        link_mode = manage.swap_link_mode if manage else "APPEND"
-        use_link = link_mode == "LINK"
+        # Get import settings from Blender's Asset Browser
+        use_link, instance_collections = self._get_import_settings(context)
 
         # Get the selected asset from asset browser
         selected_paths, _ = collect_selected_asset_files(context)
         if len(selected_paths) != 1:
-            self.report({"WARNING"}, "Select exactly one asset to swap")
+            self.report({"WARNING"}, "Select exactly one asset to replace with")
             return {"CANCELLED"}
 
         asset_path = selected_paths[0]
