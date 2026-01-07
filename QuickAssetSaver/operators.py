@@ -1105,16 +1105,9 @@ class QAS_OT_move_selected_to_library(Operator):
                         skipped += 1
                         continue
                     
-                    # Handle conflicts
+                    # Handle conflicts - auto-increment if file exists
                     if dest.exists():
-                        mode = manage.move_conflict_resolution
-                        if mode == "INCREMENT":
-                            dest = increment_filename(dest.parent, dest.stem, dest.suffix)
-                        elif mode == "CANCEL":
-                            skipped += 1
-                            continue
-                        elif mode == "OVERWRITE":
-                            dest.unlink()
+                        dest = increment_filename(dest.parent, dest.stem, dest.suffix)
                     
                     shutil.move(str(src_path), str(dest))
                     moved += 1
@@ -1126,16 +1119,9 @@ class QAS_OT_move_selected_to_library(Operator):
                             dest_filename = f"{sanitize_name(asset_name)}.blend"
                             dest = dest_base / dest_filename
                             
-                            # Handle conflicts
+                            # Handle conflicts - auto-increment if file exists
                             if dest.exists():
-                                mode = manage.move_conflict_resolution
-                                if mode == "INCREMENT":
-                                    dest = increment_filename(dest.parent, sanitize_name(asset_name), ".blend")
-                                elif mode == "CANCEL":
-                                    skipped += 1
-                                    continue
-                                elif mode == "OVERWRITE":
-                                    dest.unlink()
+                                dest = increment_filename(dest.parent, sanitize_name(asset_name), ".blend")
                             
                             # Extract asset to new file
                             success = self._extract_asset_to_file(
@@ -1752,247 +1738,6 @@ class QAS_OT_delete_selected_assets(Operator):
             pass
 
 
-class QAS_OT_edit_selected_asset(Operator):
-    """Edit the name and/or tags of a selected asset - works correctly with multi-asset files."""
-
-    bl_idname = "qas.edit_selected_asset"
-    bl_label = "Apply Changes"
-    bl_description = "Update the name and tags of the selected asset (safe for multi-asset files)"
-    bl_options = {"REGISTER"}
-
-    @classmethod
-    def poll(cls, context):
-        return (
-            hasattr(context, "space_data")
-            and context.space_data.type == "FILE_BROWSER"
-            and getattr(context.space_data, "browse_mode", None) == "ASSETS"
-        )
-
-    def execute(self, context):
-        wm = context.window_manager
-        manage = getattr(wm, "qas_manage_props", None)
-        if not manage:
-            self.report({"ERROR"}, "Internal properties missing")
-            return {"CANCELLED"}
-
-        # Use the new function that gives us both path AND asset name
-        selected_assets, active_library = collect_selected_assets_with_names(context)
-        if len(selected_assets) != 1:
-            self.report({"WARNING"}, "Select exactly one asset to edit")
-            return {"CANCELLED"}
-
-        asset_info = selected_assets[0]
-        blend_path = asset_info['path']
-        target_asset_name = asset_info['name']
-        
-        new_name = manage.edit_asset_name.strip()
-        new_tags = manage.edit_asset_tags.strip()
-
-        if not new_name and not new_tags:
-            self.report({"WARNING"}, "Nothing to change")
-            return {"CANCELLED"}
-
-        # Check if this is a multi-asset file
-        asset_count_info = count_assets_in_blend(blend_path)
-        is_multi_asset = asset_count_info['count'] > 1
-
-        try:
-            success = self._update_asset_in_blend(
-                blend_path, 
-                target_asset_name,
-                new_name, 
-                new_tags,
-                is_multi_asset
-            )
-            if not success:
-                self.report({"ERROR"}, "Failed to update asset")
-                return {"CANCELLED"}
-        except Exception as e:
-            self.report({"ERROR"}, f"Error updating asset: {e}")
-            import traceback
-            traceback.print_exc()
-            return {"CANCELLED"}
-
-        # Only rename file if single-asset file AND name changed
-        if new_name and not is_multi_asset:
-            sanitized_name = sanitize_name(new_name)
-            new_path = blend_path.parent / f"{sanitized_name}.blend"
-            if new_path != blend_path:
-                if new_path.exists():
-                    self.report({"WARNING"}, f"File {new_path.name} already exists")
-                else:
-                    try:
-                        blend_path.rename(new_path)
-                    except OSError as e:
-                        self.report({"WARNING"}, f"Could not rename file: {e}")
-
-        # Clear the edit fields
-        manage.edit_asset_name = ""
-        manage.edit_asset_tags = ""
-
-        # Always refresh asset browser after edit
-        refresh_asset_browser(context)
-
-        self.report({"INFO"}, "Asset updated")
-        return {"FINISHED"}
-
-    def _update_asset_in_blend(self, blend_path, target_asset_name, new_name, new_tags, is_multi_asset):
-        """Update a SPECIFIC asset's name and/or tags inside a .blend file.
-        
-        Args:
-            blend_path: Path to the .blend file
-            target_asset_name: Name of the specific asset to modify
-            new_name: New name for the asset (or None/empty to keep current)
-            new_tags: Comma-separated tags string (or None/empty to keep current)
-            is_multi_asset: Whether the file contains multiple assets
-            
-        Returns:
-            bool: True if successful
-        """
-        datablock_collections = [
-            'objects', 'materials', 'node_groups', 'worlds', 'collections',
-            'meshes', 'curves', 'armatures', 'actions', 'brushes',
-        ]
-
-        try:
-            # First pass: get names to import
-            names_to_import = {}
-            with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
-                for collection_name in datablock_collections:
-                    if hasattr(data_from, collection_name):
-                        source = getattr(data_from, collection_name)
-                        if source:
-                            names_to_import[collection_name] = list(source)
-
-            # Temporarily rename existing datablocks to avoid conflicts
-            renamed_existing = []
-            for collection_name, names in names_to_import.items():
-                if hasattr(bpy.data, collection_name):
-                    collection = getattr(bpy.data, collection_name)
-                    for name in names:
-                        if name in collection:
-                            existing_db = collection[name]
-                            temp_name = f"__QAS_EDIT_TEMP_{name}_{id(existing_db)}"
-                            original_name = existing_db.name
-                            existing_db.name = temp_name
-                            renamed_existing.append((existing_db, original_name))
-
-            # Import all datablocks
-            with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
-                for collection_name in datablock_collections:
-                    if hasattr(data_from, collection_name):
-                        source = getattr(data_from, collection_name)
-                        if source:
-                            setattr(data_to, collection_name, list(source))
-
-            # Process imported datablocks - only modify the TARGET asset
-            imported_datablocks = set()
-            target_found = False
-            
-            for collection_name in names_to_import.keys():
-                if hasattr(bpy.data, collection_name):
-                    collection = getattr(bpy.data, collection_name)
-                    for name in names_to_import[collection_name]:
-                        if name in collection:
-                            db = collection[name]
-                            imported_datablocks.add(db)
-                            
-                            # Only modify the specific target asset
-                            if name == target_asset_name and hasattr(db, 'asset_data') and db.asset_data:
-                                target_found = True
-                                debug_print(f"Found target asset: {name}")
-                                
-                                # Update name if provided
-                                if new_name:
-                                    db.name = new_name
-                                    debug_print(f"  Renamed to: {new_name}")
-                                
-                                # Update tags if provided
-                                if new_tags:
-                                    clear_and_set_tags(db.asset_data, new_tags)
-                                    debug_print(f"  Updated tags: {new_tags}")
-
-            if not target_found:
-                # Clean up and return failure
-                for db in list(imported_datablocks):
-                    self._remove_datablock(db)
-                for existing_db, original_name in renamed_existing:
-                    try:
-                        existing_db.name = original_name
-                    except Exception:
-                        pass
-                print(f"Target asset '{target_asset_name}' not found in {blend_path.name}")
-                return False
-
-            # Write ALL datablocks back (preserves other assets unchanged)
-            temp_path = blend_path.parent / f".tmp_{blend_path.name}"
-            bpy.data.libraries.write(
-                str(temp_path),
-                imported_datablocks,
-                path_remap="RELATIVE_ALL",
-                fake_user=True,
-                compress=True,
-            )
-
-            # Clean up imported datablocks
-            for db in list(imported_datablocks):
-                self._remove_datablock(db)
-            
-            # Restore renamed existing datablocks
-            for existing_db, original_name in renamed_existing:
-                try:
-                    existing_db.name = original_name
-                except Exception:
-                    pass
-
-            # Replace original file
-            if temp_path.exists():
-                if blend_path.exists():
-                    blend_path.unlink()
-                shutil.move(str(temp_path), str(blend_path))
-                return True
-
-        except (RuntimeError, IOError, OSError) as e:
-            print(f"Failed to update asset in {blend_path.name}: {e}")
-            import traceback
-            traceback.print_exc()
-            
-            try:
-                temp_path = blend_path.parent / f".tmp_{blend_path.name}"
-                if temp_path.exists():
-                    temp_path.unlink()
-            except OSError:
-                pass
-
-        return False
-
-    def _remove_datablock(self, datablock):
-        """Remove a datablock from the current session."""
-        try:
-            if isinstance(datablock, bpy.types.Object):
-                bpy.data.objects.remove(datablock)
-            elif isinstance(datablock, bpy.types.Material):
-                bpy.data.materials.remove(datablock)
-            elif isinstance(datablock, bpy.types.NodeTree):
-                bpy.data.node_groups.remove(datablock)
-            elif isinstance(datablock, bpy.types.World):
-                bpy.data.worlds.remove(datablock)
-            elif isinstance(datablock, bpy.types.Collection):
-                bpy.data.collections.remove(datablock)
-            elif isinstance(datablock, bpy.types.Mesh):
-                bpy.data.meshes.remove(datablock)
-            elif isinstance(datablock, bpy.types.Curve):
-                bpy.data.curves.remove(datablock)
-            elif isinstance(datablock, bpy.types.Armature):
-                bpy.data.armatures.remove(datablock)
-            elif isinstance(datablock, bpy.types.Action):
-                bpy.data.actions.remove(datablock)
-            elif isinstance(datablock, bpy.types.Brush):
-                bpy.data.brushes.remove(datablock)
-        except (RuntimeError, ReferenceError):
-            pass
-
-
 class QAS_OT_swap_selected_with_asset(Operator):
     """Swap selected scene objects with the selected asset from the library."""
 
@@ -2196,6 +1941,83 @@ class QAS_OT_save_asset_to_library_direct(Operator):
     bl_label = "Copy to Asset Library"
     bl_description = "Save this asset as a standalone .blend file in your asset library"
     bl_options = {"REGISTER", "UNDO"}
+    
+    # Conflict resolution property - only shown in dialog when conflict occurs
+    conflict_action: bpy.props.EnumProperty(
+        name="File Exists",
+        description="A file with this name already exists. What would you like to do?",
+        items=[
+            ("INCREMENT", "Save with New Name", "Save as Name_001.blend, etc."),
+            ("OVERWRITE", "Overwrite", "Replace the existing file"),
+            ("CANCEL", "Cancel", "Don't save"),
+        ],
+        default="INCREMENT",
+    )
+    
+    # Internal tracking
+    _conflict_path: str = ""
+    
+    def invoke(self, context, event):
+        """Check for conflicts before executing."""
+        from . import properties
+        from .properties import get_library_by_identifier
+        
+        prefs = properties.get_addon_preferences(context)
+        wm = context.window_manager
+        props = wm.qas_save_props
+        
+        # Validate library
+        if not props.selected_library or props.selected_library == "NONE":
+            self.report({"ERROR"}, "No asset library selected")
+            return {"CANCELLED"}
+        
+        library_name, library_path_str = get_library_by_identifier(props.selected_library)
+        if not library_path_str:
+            self.report({"ERROR"}, "Could not find library path")
+            return {"CANCELLED"}
+        
+        library_path = Path(library_path_str)
+        target_dir = library_path
+        
+        # Build target directory with catalog subfolders if needed
+        if prefs.use_catalog_subfolders and props.catalog and props.catalog != "UNASSIGNED":
+            catalog_path = get_catalog_path_from_uuid(library_path_str, props.catalog)
+            if catalog_path:
+                path_parts = catalog_path.split("/")
+                sanitized_parts = [sanitize_name(part, max_length=64) for part in path_parts if part]
+                for part in sanitized_parts:
+                    target_dir = target_dir / part
+        
+        # Get the filename
+        base_name = props.asset_file_name
+        if not base_name:
+            self.report({"ERROR"}, "Invalid file name")
+            return {"CANCELLED"}
+        
+        final_filename = build_asset_filename(base_name, prefs)
+        check_path = target_dir / f"{final_filename}.blend"
+        
+        # Check if file exists
+        if check_path.exists():
+            self._conflict_path = str(check_path)
+            return context.window_manager.invoke_props_dialog(self, width=350)
+        
+        # No conflict, execute directly
+        return self.execute(context)
+    
+    def draw(self, context):
+        """Draw the conflict resolution dialog."""
+        layout = self.layout
+        layout.label(text="A file with this name already exists:", icon="ERROR")
+        
+        # Show truncated path
+        path = self._conflict_path
+        if len(path) > 50:
+            path = "..." + path[-47:]
+        layout.label(text=path)
+        
+        layout.separator()
+        layout.prop(self, "conflict_action", text="")
 
     def execute(self, context):
         """Execute the save operation directly using panel properties."""
@@ -2281,16 +2103,18 @@ class QAS_OT_save_asset_to_library_direct(Operator):
         # Apply prefix, suffix, and date if configured
         final_filename = build_asset_filename(base_sanitized_name, prefs)
 
-        # Handle file conflicts
-        if props.conflict_resolution == "INCREMENT":
-            output_path = increment_filename(target_dir, final_filename)
-        elif props.conflict_resolution == "OVERWRITE":
-            output_path = target_dir / f"{final_filename}.blend"
-        else:  # CANCEL
-            check_path = target_dir / f"{final_filename}.blend"
-            if check_path.exists():
-                self.report({"WARNING"}, f"File already exists: {check_path.name}")
+        # Handle file conflicts using the conflict_action property
+        check_path = target_dir / f"{final_filename}.blend"
+        
+        if check_path.exists():
+            if self.conflict_action == "INCREMENT":
+                output_path = increment_filename(target_dir, final_filename)
+            elif self.conflict_action == "OVERWRITE":
+                output_path = check_path
+            else:  # CANCEL
+                self.report({"INFO"}, "Save cancelled")
                 return {"CANCELLED"}
+        else:
             output_path = check_path
 
         # Get the asset datablock from context
@@ -2322,8 +2146,8 @@ class QAS_OT_save_asset_to_library_direct(Operator):
             if props.catalog and props.catalog != "UNASSIGNED":
                 asset_id.asset_data.catalog_id = props.catalog
 
-            # Set tags using helper function
-            clear_and_set_tags(asset_id.asset_data, props.asset_tags)
+            # Tags are already set on asset_data via native Blender tag editor
+            # No need to sync from props.asset_tags - the native editor modifies asset_data.tags directly
 
         datablocks = {asset_id}
 
@@ -2939,15 +2763,260 @@ class QAS_OT_open_bundle_folder(Operator):
         return {"FINISHED"}
 
 
+class QAS_OT_apply_metadata_changes(Operator):
+    """Apply metadata changes to the asset in its source .blend file."""
+
+    bl_idname = "qas.apply_metadata_changes"
+    bl_label = "Apply Changes"
+    bl_description = "Save metadata changes back to the asset's source file"
+    bl_options = {"REGISTER"}
+
+    @classmethod
+    def poll(cls, context):
+        wm = context.window_manager
+        meta = getattr(wm, "qas_metadata_edit", None)
+        if not meta:
+            return False
+        # Only enable if there are changes and we have a source file
+        return meta.has_changes() and meta.source_file
+
+    def execute(self, context):
+        wm = context.window_manager
+        meta = wm.qas_metadata_edit
+        
+        source_path = Path(meta.source_file)
+        if not source_path.exists():
+            self.report({"ERROR"}, f"Source file not found: {source_path}")
+            return {"CANCELLED"}
+        
+        target_asset_name = meta.asset_name
+        new_name = meta.edit_name.strip() if meta.edit_name.strip() else None
+        new_description = meta.edit_description
+        new_license = meta.edit_license
+        new_copyright = meta.edit_copyright
+        new_author = meta.edit_author
+        
+        # Get tags from CollectionProperty
+        tag_list = [tag.name.strip() for tag in meta.edit_tags if tag.name.strip()]
+        
+        try:
+            success = self._update_asset_metadata(
+                source_path, 
+                target_asset_name,
+                new_name=new_name,
+                new_description=new_description,
+                new_license=new_license,
+                new_copyright=new_copyright,
+                new_author=new_author,
+                new_tags=tag_list,
+            )
+            
+            if success:
+                # Update originals to reflect saved state
+                meta.orig_name = meta.edit_name
+                meta.orig_description = meta.edit_description
+                meta.orig_license = meta.edit_license
+                meta.orig_copyright = meta.edit_copyright
+                meta.orig_author = meta.edit_author
+                meta.orig_tags = meta.get_tags_string()
+                
+                # Update stored asset_name if it was renamed
+                if new_name and new_name != target_asset_name:
+                    meta.asset_name = new_name
+                
+                # Force refresh asset browser
+                refresh_asset_browser(context)
+                
+                self.report({"INFO"}, f"Updated metadata for '{meta.edit_name}'")
+                return {"FINISHED"}
+            else:
+                self.report({"ERROR"}, "Failed to update asset metadata")
+                return {"CANCELLED"}
+                
+        except Exception as e:
+            self.report({"ERROR"}, f"Error updating metadata: {e}")
+            return {"CANCELLED"}
+
+    def _update_asset_metadata(self, blend_path, target_name, new_name=None, 
+                                new_description=None, new_license=None,
+                                new_copyright=None, new_author=None, new_tags=None):
+        """Update metadata for a specific asset in a .blend file.
+        
+        Args:
+            blend_path: Path to the .blend file
+            target_name: Name of the asset to update
+            new_name: New name for the asset (or None to keep current)
+            new_description: New description
+            new_license: New license
+            new_copyright: New copyright
+            new_author: New author  
+            new_tags: List of tag strings (replaces all existing tags)
+            
+        Returns:
+            bool: True if successful
+        """
+        datablock_collections = [
+            'objects', 'materials', 'node_groups', 'worlds', 'collections',
+            'meshes', 'curves', 'armatures', 'actions', 'brushes',
+        ]
+        
+        try:
+            # First pass: get the names to import
+            names_to_import = {}
+            with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
+                for collection_name in datablock_collections:
+                    if hasattr(data_from, collection_name):
+                        source = getattr(data_from, collection_name)
+                        if source:
+                            names_to_import[collection_name] = list(source)
+            
+            # Temporarily rename existing datablocks to avoid conflicts
+            renamed_existing = []
+            for collection_name, names in names_to_import.items():
+                if hasattr(bpy.data, collection_name):
+                    collection = getattr(bpy.data, collection_name)
+                    for name in names:
+                        if name in collection:
+                            existing_db = collection[name]
+                            temp_name = f"__QAS_META_TEMP_{name}_{id(existing_db)}"
+                            original_name = existing_db.name
+                            existing_db.name = temp_name
+                            renamed_existing.append((existing_db, original_name))
+            
+            # Import all datablocks
+            with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
+                for collection_name in datablock_collections:
+                    if hasattr(data_from, collection_name):
+                        source = getattr(data_from, collection_name)
+                        if source:
+                            setattr(data_to, collection_name, list(source))
+            
+            # Find and modify the target asset
+            imported_datablocks = set()
+            target_found = False
+            
+            for collection_name in names_to_import.keys():
+                if hasattr(bpy.data, collection_name):
+                    collection = getattr(bpy.data, collection_name)
+                    for name in names_to_import[collection_name]:
+                        if name in collection:
+                            db = collection[name]
+                            imported_datablocks.add(db)
+                            
+                            # Check if this is our target
+                            if name == target_name and hasattr(db, 'asset_data') and db.asset_data:
+                                target_found = True
+                                
+                                # Update metadata
+                                if new_description is not None:
+                                    db.asset_data.description = new_description
+                                if new_license is not None:
+                                    db.asset_data.license = new_license
+                                if new_copyright is not None:
+                                    db.asset_data.copyright = new_copyright
+                                if new_author is not None:
+                                    db.asset_data.author = new_author
+                                
+                                # Update tags (clear and re-add)
+                                if new_tags is not None:
+                                    # Clear existing tags
+                                    while len(db.asset_data.tags) > 0:
+                                        db.asset_data.tags.remove(db.asset_data.tags[0])
+                                    # Add new tags
+                                    for tag in new_tags:
+                                        db.asset_data.tags.new(tag)
+                                
+                                # Rename if needed (do this last)
+                                if new_name and new_name != target_name:
+                                    db.name = new_name
+            
+            if not target_found:
+                # Clean up
+                for db in list(imported_datablocks):
+                    self._remove_datablock(db)
+                for existing_db, original_name in renamed_existing:
+                    try:
+                        existing_db.name = original_name
+                    except Exception:
+                        pass
+                return False
+            
+            # Write back to file
+            temp_path = blend_path.parent / f".tmp_{blend_path.name}"
+            bpy.data.libraries.write(
+                str(temp_path),
+                imported_datablocks,
+                path_remap="RELATIVE_ALL",
+                fake_user=True,
+                compress=True,
+            )
+            
+            # Clean up imported datablocks
+            for db in list(imported_datablocks):
+                self._remove_datablock(db)
+            for existing_db, original_name in renamed_existing:
+                try:
+                    existing_db.name = original_name
+                except Exception:
+                    pass
+            
+            # Replace original file
+            if temp_path.exists():
+                if blend_path.exists():
+                    blend_path.unlink()
+                shutil.move(str(temp_path), str(blend_path))
+                return True
+                
+        except Exception as e:
+            print(f"Error updating metadata: {e}")
+            import traceback
+            traceback.print_exc()
+            # Clean up temp file
+            try:
+                temp_path = blend_path.parent / f".tmp_{blend_path.name}"
+                if temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
+        
+        return False
+    
+    def _remove_datablock(self, datablock):
+        """Remove a datablock from the current session."""
+        try:
+            if isinstance(datablock, bpy.types.Object):
+                bpy.data.objects.remove(datablock)
+            elif isinstance(datablock, bpy.types.Material):
+                bpy.data.materials.remove(datablock)
+            elif isinstance(datablock, bpy.types.NodeTree):
+                bpy.data.node_groups.remove(datablock)
+            elif isinstance(datablock, bpy.types.World):
+                bpy.data.worlds.remove(datablock)
+            elif isinstance(datablock, bpy.types.Collection):
+                bpy.data.collections.remove(datablock)
+            elif isinstance(datablock, bpy.types.Mesh):
+                bpy.data.meshes.remove(datablock)
+            elif isinstance(datablock, bpy.types.Curve):
+                bpy.data.curves.remove(datablock)
+            elif isinstance(datablock, bpy.types.Armature):
+                bpy.data.armatures.remove(datablock)
+            elif isinstance(datablock, bpy.types.Action):
+                bpy.data.actions.remove(datablock)
+            elif isinstance(datablock, bpy.types.Brush):
+                bpy.data.brushes.remove(datablock)
+        except (RuntimeError, ReferenceError):
+            pass
+
+
 classes = (
     QAS_OT_save_asset_to_library_direct,
     QAS_OT_open_library_folder,
     QAS_OT_move_selected_to_library,
     QAS_OT_delete_selected_assets,
-    QAS_OT_edit_selected_asset,
     QAS_OT_swap_selected_with_asset,
     QAS_OT_bundle_assets,
     QAS_OT_open_bundle_folder,
+    QAS_OT_apply_metadata_changes,
 )
 
 

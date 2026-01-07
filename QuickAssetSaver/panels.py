@@ -44,265 +44,76 @@ def is_user_library(context, asset_lib_ref):
     return False
 
 
-class QAS_PT_asset_tools_panel(bpy.types.Panel):
-    """Side panel in Asset Browser for Quick Asset Saver."""
+# ---------------------------------------------------------------------------
+# Keybinding helpers
+# ---------------------------------------------------------------------------
+def _format_keymap_item(kmi):
+    """Return a human-readable accelerator string for a keymap item."""
+    parts = []
+    if getattr(kmi, "ctrl", False):
+        parts.append("Ctrl")
+    if getattr(kmi, "alt", False):
+        parts.append("Alt")
+    if getattr(kmi, "shift", False):
+        parts.append("Shift")
+    key = getattr(kmi, "type", "")
+    if key:
+        parts.append(key.title())
+    return "+".join(parts) if parts else "N"
 
-    bl_label = "Quick Asset Saver"
-    bl_idname = "QAS_PT_asset_tools"
-    bl_space_type = "FILE_BROWSER"
-    bl_region_type = "TOOLS"
-    bl_category = "Assets"
+def _find_tool_props_keybinding():
+    """Find the active keybinding for toggling TOOL_PROPS in Asset Browser.
 
-    @classmethod
-    def poll(cls, context):
-        """
-        Determine if this panel should be visible.
+    Searches keymaps for wm.context_toggle with data_path 'space_data.show_region_tool_props'.
+    Returns a string like 'N' or 'Ctrl+N'. Falls back to 'N' if not found.
+    """
+    try:
+        wm = bpy.context.window_manager
+        kc = getattr(wm, "keyconfigs", None)
+        if not kc:
+            return "N"
+        active = getattr(kc, "active", None) or getattr(kc, "user", None) or getattr(kc, "default", None)
+        if not active:
+            return "N"
 
-        Only shows when:
-        - In Asset Browser (FILE_BROWSER with ASSETS browse mode)
-        - Browsing the Current File library (LOCAL/CURRENT)
-
-        Args:
-            context: Blender context
-
-        Returns:
-            bool: True if panel should be visible
-        """
-        space = context.space_data
-        if not space or space.type != "FILE_BROWSER":
-            return False
-
-        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
-            return False
-
-        params = space.params
-        if not hasattr(params, "asset_library_reference"):
-            return False
-
-        asset_lib_ref = params.asset_library_reference
-        is_current_file = (
-            asset_lib_ref == "LOCAL"
-            or asset_lib_ref == "CURRENT"
-            or getattr(params, "asset_library_ref", None) == "LOCAL"
-        )
-
-        return is_current_file
-
-    def draw(self, context):
-        """
-        Draw the Quick Asset Saver panel UI.
-
-        Displays:
-        - Library selection dropdown
-        - Asset metadata fields (name, author, description, etc.)
-        - Catalog selection
-        - File naming options
-        - Target path preview
-        - Save button
-
-        Args:
-            context: Blender context with selected asset
-        """
-        layout = self.layout
-
-        from . import properties
-        from .properties import get_library_by_identifier
-        from .operators import sanitize_name
-
-        prefs = properties.get_addon_preferences(context)
-        wm = context.window_manager
-        props = wm.qas_save_props
-
-        box = layout.box()
-        box.label(text="Target", icon="ASSET_MANAGER")
-        box.prop(props, "selected_library", text="")
-        box.label(
-            text="Add other libraries in the File Paths tab in Blender Preferences."
-        )
-
-        # Get the actual library name and path from identifier
-        library_name, library_path_str = (None, None)
-        if props.selected_library and props.selected_library != "NONE":
-            library_name, library_path_str = get_library_by_identifier(props.selected_library)
-            # Debug output
-            debug_print(f"[QAS Panel Debug] selected_library: {props.selected_library}")
-            debug_print(f"[QAS Panel Debug] library_name: {library_name}")
-            debug_print(f"[QAS Panel Debug] library_path_str: {library_path_str}")
-
-        if library_path_str:
-            row = box.row()
-            # Display the library name and path
-            row.label(text=library_path_str)
-            row.operator("qas.open_library_folder", text="", icon="FOLDER_REDIRECT")
-
-        layout.separator()
-
-        # Check for timeout on success message (15 seconds)
-        import time
-        if props.show_success_message and props.success_message_time > 0:
-            if time.time() - props.success_message_time > 15.0:
-                props.show_success_message = False
-                props.success_message_time = 0.0
-
-        if context.asset and hasattr(context, "asset"):
-            asset_name = getattr(context.asset, "name", "Unknown")
-
-            if props.last_asset_name != asset_name:
-                props.last_asset_name = asset_name
-                props.asset_display_name = asset_name
-                props.asset_author = prefs.default_author
-                props.asset_description = prefs.default_description
-                props.asset_license = prefs.default_license
-                props.asset_copyright = prefs.default_copyright
-                # Clear success message when user selects a different asset
-                props.show_success_message = False
-                props.success_message_time = 0.0
-
-            if props.asset_display_name:
-                props.asset_file_name = sanitize_name(props.asset_display_name)
-
-            outer_box = layout.box()
-            outer_box.label(text="Asset Data", icon="ASSET_MANAGER")
-            outer_box.label(text=f"  {asset_name}")
-
-            inner_box = outer_box.box()
-            inner_box.label(text="Options", icon="SETTINGS")
-
-            inner_box.prop(props, "asset_display_name")
-            inner_box.prop(props, "catalog")
-            inner_box.prop(props, "asset_author")
-            inner_box.prop(props, "asset_description")
-            inner_box.prop(props, "asset_license")
-            inner_box.prop(props, "asset_copyright")
-            inner_box.prop(props, "asset_tags")
-            inner_box.prop(props, "conflict_resolution")
-
-            # Show target path preview
-            if (
-                props.selected_library
-                and props.selected_library != "NONE"
-                and props.asset_file_name
-                and library_path_str
-            ):
-                from pathlib import Path
-                from .operators import get_catalog_path_from_uuid, build_asset_filename
-
-                preview_box = layout.box()
-                preview_box.label(text="Path", icon="FILE_FOLDER")
-
-                # Build the preview path with validation to handle invalid inputs gracefully
-                try:
-                    library_path = Path(library_path_str)
-                    target_path = library_path
-
-                    # Add catalog subfolder if enabled
-                    if (
-                        prefs.use_catalog_subfolders
-                        and props.catalog
-                        and props.catalog != "UNASSIGNED"
-                    ):
-                        catalog_path = get_catalog_path_from_uuid(
-                            library_path_str, props.catalog
-                        )
-                        if catalog_path:
-                            path_parts = catalog_path.split("/")
-                            sanitized_parts = [
-                                sanitize_name(part, max_length=64)
-                                for part in path_parts
-                                if part
-                            ]
-                            for part in sanitized_parts:
-                                target_path = target_path / part
-
-                    # Build the final filename with naming conventions
-                    final_filename = build_asset_filename(props.asset_file_name, prefs)
-                    full_path = target_path / f"{final_filename}.blend"
-                except (OSError, ValueError):
-                    # If path construction fails, show error
-                    preview_box.label(text="  Error: Invalid path", icon="ERROR")
-                    return
-
-                # Display relative path if it fits, otherwise show just the filename with ellipsis
-                try:
-                    relative_path = full_path.relative_to(library_path)
-                    path_str = str(relative_path)
-                except (ValueError, OSError):
-                    # Path is not relative or other path error
-                    path_str = full_path.name
-
-                # Path display in a nested box for visual emphasis
-                path_display_box = preview_box.box()
-                
-                # Split long paths across multiple lines
-                if len(path_str) > MAX_PATH_DISPLAY_LENGTH:
-                    col = path_display_box.column(align=True)
-                    col.scale_y = 0.8
-                    # Show library name
-                    col.label(text=f"{library_path.name}/", icon="BLANK1")
-                    # Show subdirectories
-                    if target_path != library_path:
-                        try:
-                            subpath = target_path.relative_to(library_path)
-                            col.label(text=f"  {subpath}/", icon="BLANK1")
-                        except ValueError:
-                            pass
-                    # Show filename
-                    col.label(text=f"  {final_filename}.blend", icon="BLANK1")
-                else:
-                    path_display_box.label(text=path_str, icon="BLANK1")
-
-            layout.separator()
-            layout.operator(
-                "qas.save_asset_to_library_direct",
-                text="Copy to Asset Library",
-                icon="EXPORT",
-            )
-        else:
-            box = layout.box()
-            box.label(text="No asset selected", icon="INFO")
-            box.label(text="Select an asset")
-            box.label(text="to save it to your library")
-        
-        # Show success message after save (outside asset check so it shows when deselected)
-        if props.show_success_message:
-            layout.separator()
-            success_box = layout.box()
-            success_box.label(text="Asset saved successfully!", icon="CHECKMARK")
-            col = success_box.column(align=True)
-            col.label(text="Enjoying Quick Asset Saver?", icon="FUND")
-            col.label(text="Consider leaving a rating! It really helps!", icon="BLANK1")
+        candidate_maps = [
+            active.keymaps.get("File Browser"),
+            active.keymaps.get("Asset Browser"),
+            active.keymaps.get("Window"),
+            active.keymaps.get("Screen"),
+        ]
+        for km in candidate_maps:
+            if not km:
+                continue
+            for kmi in km.keymap_items:
+                if kmi.idname == "wm.context_toggle" and getattr(kmi.properties, "data_path", "") == "space_data.show_region_tool_props":
+                    return _format_keymap_item(kmi) or "N"
+    except Exception:
+        pass
+    return "N"
 
 
 # ============================================================================
-# QUICK ASSET BUNDLER PANEL
+# QUICK ASSET MANAGER PANEL
 # ============================================================================
 
-
-class QAS_PT_asset_bundler(bpy.types.Panel):
-    """Panel for bundling multiple assets from a user library."""
-
-    bl_label = "Quick Asset Bundler"
-    bl_idname = "QAS_PT_asset_bundler"
+class QAS_PT_asset_manager(bpy.types.Panel):
+    """Panel for bundling multiple assets from a user library and moving assets between libraries."""
+    bl_label = "Quick Asset Manager"
+    bl_idname = "QAS_PT_asset_manager"
     bl_space_type = "FILE_BROWSER"
     bl_region_type = "TOOLS"
     bl_category = "Assets"
-    bl_order = 2
-
+    bl_order = 1
+    
     @classmethod
     def poll(cls, context):
         """
-        Determine if the bundler panel should be visible.
+        Determine if the asset manager panel should be visible.
 
         Only shows when:
         - In Asset Browser (FILE_BROWSER with ASSETS browse mode)
         - Browsing a user-configured library (not LOCAL, CURRENT, ALL, or ESSENTIALS)
-        - Library exists in user preferences
-
-        Args:
-            context: Blender context
-
-        Returns:
-            bool: True if panel should be visible
         """
         space = context.space_data
         if not space or space.type != "FILE_BROWSER":
@@ -330,281 +141,179 @@ class QAS_PT_asset_bundler(bpy.types.Panel):
         return True
 
     def draw(self, context):
-        """
-        Draw the Asset Bundler panel UI.
-
-        Displays:
-        - Bundle name input
-        - Save path selection
-        - Duplicate handling mode
-        - Catalog copy option
-        - Selected assets count
-        - Warnings for large selections or problematic paths
-        - Bundle button
-
-        Args:
-            context: Blender context
-        """
+        """Draw the combined Asset Manager panel UI."""
         layout = self.layout
         wm = context.window_manager
-        props = wm.qas_bundler_props
-
-        # Output name
-        layout.label(text="Bundle", icon="PACKAGE")
-        row = layout.row()
-        row.prop(props, "output_name", text="Name", icon="FILE_BLEND")
-
-        # Save path
-        row = layout.row()
-        row.prop(props, "save_path", text="File Path", icon="FOLDER_REDIRECT")
-
-        # Duplicate handling
-        row = layout.row()
-        row.prop(props, "duplicate_mode", text="Overwrite", icon="DUPLICATE")
-
-        layout.prop(props, "copy_catalog")
+        bundler_props = wm.qas_bundler_props
+        manage_props = getattr(wm, "qas_manage_props", None)
 
         # Count selected assets
         selected_count = 0
-        if (
-            hasattr(context, "selected_asset_files")
-            and context.selected_asset_files is not None
-        ):
+        if hasattr(context, "selected_asset_files") and context.selected_asset_files is not None:
             selected_count = len(context.selected_asset_files)
-        elif (
-            hasattr(context, "selected_assets") and context.selected_assets is not None
-        ):
+        elif hasattr(context, "selected_assets") and context.selected_assets is not None:
             selected_count = len(context.selected_assets)
         elif hasattr(context.space_data, "activate_operator_properties"):
-            # Fallback: try to get selection from file browser
             try:
                 selected_files = [f for f in context.space_data.files if f.select]
                 selected_count = len(selected_files)
             except (AttributeError, TypeError):
                 selected_count = 0
 
-        # Check for timeout on success message (15 seconds)
-        import time
-        if props.show_success_message and props.success_message_time > 0:
-            if time.time() - props.success_message_time > 15.0:
-                props.show_success_message = False
-                props.success_message_time = 0.0
-
-        # Clear success message when selection changes
-        if selected_count > 0 and props.show_success_message:
-            # User has made a new selection, clear the message
-            props.show_success_message = False
-            props.success_message_time = 0.0
-
-        # Red warning: saving inside library directory
-        if props.save_path:
-            from pathlib import Path
-
-            try:
-                save_path = Path(props.save_path)
-            except (OSError, ValueError):
-                # Invalid path, skip warning
-                save_path = None
-
-            # Get active library path
-            if save_path:
-                prefs = context.preferences
-                if hasattr(prefs, "filepaths") and hasattr(
-                    prefs.filepaths, "asset_libraries"
-                ):
-                    # Safely get params with proper null checks
-                    if context.area and hasattr(context.area, "spaces"):
-                        active_space = context.area.spaces.active
-                        if active_space and hasattr(active_space, "params"):
-                            params = active_space.params
-                            asset_lib_ref = getattr(params, "asset_library_ref", None)
-                            
-                            # Also try the older API
-                            if not asset_lib_ref and hasattr(params, "asset_library_reference"):
-                                asset_lib_ref = params.asset_library_reference
-
-                            if asset_lib_ref:
-                                for lib in prefs.filepaths.asset_libraries:
-                                    if hasattr(lib, "name") and lib.name == asset_lib_ref:
-                                        try:
-                                            library_path = Path(lib.path)
-                                            if save_path.resolve().is_relative_to(
-                                                library_path.resolve()
-                                            ):
-                                                warning_box = layout.box()
-                                                warning_box.alert = True
-                                                warning_box.label(
-                                                    text="Warning: Save location is inside your configured asset library",
-                                                    icon="ERROR",
-                                                )
-                                                warning_box.label(
-                                                    text="This may cause issues with asset management"
-                                                )
-                                        except (ValueError, OSError):
-                                            # Path comparison failed, skip warning
-                                            pass
-                                        # Found the library, no need to continue
-                                        break
-
-        if selected_count > LARGE_SELECTION_THRESHOLD:
-            layout.separator()
-            warning_box = layout.box()
-            row = warning_box.row()
-            row.label(text=f"{selected_count} assets selected", icon="INFO")
-            warning_box.label(text="Bundling may take a moment,", icon="BLANK1")
-            warning_box.label(text="blender will hang until complete.", icon="BLANK1")
-            warning_box.scale_y = 0.7
-
-        layout.separator()
-
-        if selected_count > 0:
-            row = layout.row(align=True)
-            row.scale_y = 1.2
-            row.operator(
-                "qas.bundle_assets",
-                text=f"Bundle {selected_count} Selected Asset{'s' if selected_count != 1 else ''}",
-                icon="PACKAGE",
-            )
-            row.operator("qas.open_bundle_folder", text="", icon="FILE_FOLDER")
-        else:
-            row = layout.row()
-            row.enabled = False
-            row.scale_y = 1.2
-            row.operator(
-                "qas.bundle_assets", text="Bundle Selected Assets", icon="PACKAGE"
-            )
-
-            box = layout.box()
-            box.label(text="No assets selected", icon="INFO")
-            box.label(text="Select assets from the browser", icon="BLANK1")
-            box.label(text="to bundle them into one file", icon="BLANK1")
+        self.mover_section(layout, context, manage_props, selected_count)
+        self.bundler_section(layout, context, bundler_props, selected_count)
         
-        # Show success message after bundle (outside selection check so it shows when deselected)
-        if props.show_success_message:
+    def bundler_section(self, layout, context, bundler_props, selected_count):
+        box = layout.box()
+        box.label(text="Bundle Assets", icon="PACKAGE")
+        
+        row = box.row()
+        row.prop(bundler_props, "output_name", text="Name", icon="FILE_BLEND")
+        
+        row = box.row()
+        row.prop(bundler_props, "save_path", text="Path", icon="FOLDER_REDIRECT")
+        
+        row = box.row()
+        row.prop(bundler_props, "duplicate_mode", text="Overwrite", icon="DUPLICATE")
+        
+        box.prop(bundler_props, "copy_catalog")
+
+        row = box.row()
+        row.scale_y = 1.2
+        row.enabled = selected_count > 0
+        if selected_count > 1:
+            row.operator("qas.bundle_assets", text=f"Bundle {selected_count} Assets", icon="PACKAGE")
+        elif selected_count == 1:
+            row.operator("qas.bundle_assets", text="Bundle Asset", icon="PACKAGE")
+        else:
+            row.operator("qas.bundle_assets", text="Bundle Assets", icon="PACKAGE")
+        
+    def mover_section(self, layout, context, manage_props, selected_count):
+        layout.separator()
+        
+        box = layout.box()
+        box.label(text="Move Assets", icon="EXPORT")
+        
+        if manage_props:
+            box.prop(manage_props, "move_target_library", text="Library")
+            box.prop(manage_props, "move_target_catalog", text="Catalog")
+
+        row = box.row()
+        row.scale_y = 1.2
+        row.enabled = selected_count > 0
+        if selected_count > 1:
+            row.operator("qas.move_selected_to_library", text=f"Move {selected_count} Assets", icon="EXPORT")
+        elif selected_count == 1:
+            row.operator("qas.move_selected_to_library", text="Move Asset", icon="EXPORT")
+        else:
+            row.operator("qas.move_selected_to_library", text="Move Assets", icon="EXPORT")
+
+        # Selection info
+        if selected_count == 0:
             layout.separator()
-            success_box = layout.box()
-            success_box.label(text="Bundle created successfully!", icon="CHECKMARK")
-            col = success_box.column(align=True)
-            col.label(text="Enjoying Quick Asset Saver?", icon="FUND")
-            col.label(text="Consider leaving a rating! It really helps!", icon="BLANK1")
+            info_box = layout.box()
+            info_box.label(text="No assets selected", icon="INFO")
+            info_box.label(text="Select assets to bundle or move", icon="BLANK1")
 
 
-class QAS_PT_asset_manage(bpy.types.Panel):
-    """Panel for managing assets inside user libraries (move/delete/catalog)."""
+# ============================================================================
+# CURRENT FILE SAVE PANEL HINT (Temporary)
+# ============================================================================
 
-    bl_label = "Quick Asset Manager"
-    bl_idname = "QAS_PT_asset_manage"
+class QAS_PT_save_hint(bpy.types.Panel):
+    """Hint panel shown in Current File to direct users to the right-side Save panel."""
+    bl_label = "Quick Asset Saver"
+    bl_idname = "QAS_PT_save_hint"
     bl_space_type = "FILE_BROWSER"
     bl_region_type = "TOOLS"
     bl_category = "Assets"
-    bl_order = 1
+    bl_order = 10
 
     @classmethod
     def poll(cls, context):
+        # Only show in Asset Browser when viewing Current File assets
         space = context.space_data
         if not space or space.type != "FILE_BROWSER":
             return False
         if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
             return False
-
-        params = space.params
-        if not hasattr(params, "asset_library_reference"):
+        params = getattr(space, "params", None)
+        if not params:
             return False
-
-        # Visible when browsing a user-configured library (not LOCAL/CURRENT/ALL/ESSENTIALS)
-        asset_lib_ref = params.asset_library_reference
-        if not is_user_library(context, asset_lib_ref):
-            return False
-
-        if hasattr(params, "asset_library_ref"):
-            newer_ref = params.asset_library_ref
-            if not is_user_library(context, newer_ref):
-                return False
-
-        return True
+        asset_lib_ref = getattr(params, "asset_library_reference", None)
+        is_current_file = asset_lib_ref in ["LOCAL", "CURRENT"] or getattr(params, "asset_library_ref", None) == "LOCAL"
+        return bool(is_current_file)
 
     def draw(self, context):
         layout = self.layout
+
+        # Message
+        box = layout.box()
+        box.label(text="The save panel has moved to", icon="INFO")
+        box.label(text="Blender's tool panel to the right.", icon="BLANK1")
+        key_str = _find_tool_props_keybinding()
+        box.label(text=f"Open it with your ( {key_str} ) key.", icon="BLANK1")
+
+class QAS_UL_metadata_tags(bpy.types.UIList):
+    """UIList for displaying and editing asset tags."""
+    bl_idname = "QAS_UL_metadata_tags"
+    
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        # item is a QAS_TagItem
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            layout.prop(item, "name", text="", emboss=False, icon='NONE')
+        elif self.layout_type == 'GRID':
+            layout.alignment = 'CENTER'
+            layout.label(text=item.name, icon='NONE')
+
+
+class QAS_OT_tag_add(bpy.types.Operator):
+    """Add a new tag to the asset"""
+    bl_idname = "qas.tag_add"
+    bl_label = "Add Tag"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
         wm = context.window_manager
-        manage = getattr(wm, "qas_manage_props", None)
+        return hasattr(wm, "qas_metadata_edit")
+    
+    def execute(self, context):
+        wm = context.window_manager
+        meta = wm.qas_metadata_edit
+        
+        tag = meta.edit_tags.add()
+        tag.name = "Tag"
+        meta.active_tag_index = len(meta.edit_tags) - 1
+        
+        return {'FINISHED'}
 
-        # Get selected asset files
-        asset_files = None
-        if hasattr(context, "selected_asset_files") and context.selected_asset_files is not None:
-            asset_files = context.selected_asset_files
-        elif hasattr(context, "selected_assets") and context.selected_assets is not None:
-            asset_files = context.selected_assets
-        elif hasattr(context.space_data, "files"):
-            try:
-                asset_files = [f for f in context.space_data.files if getattr(f, "select", False)]
-            except (AttributeError, TypeError, RuntimeError):
-                asset_files = None
 
-        selected_count = len(asset_files) if asset_files else 0
-
-        # ============ EDIT SECTION (top) ============
-        if manage:
-            layout.label(text="Edit", icon="GREASEPENCIL")
-            box = layout.box()
-            
-            # Auto-populate edit fields when exactly one asset is selected
-            if selected_count == 1 and asset_files:
-                asset_file = asset_files[0]
-                asset_name = getattr(asset_file, "name", "")
-                
-                # Get current selection identifier to track changes
-                current_selection_id = asset_name
-                
-                # Only update if selection changed (check via a simple tracking attribute)
-                last_selection = manage.edit_last_selection
-                if last_selection != current_selection_id:
-                    # Update the fields with selected asset info
-                    manage.edit_asset_name = asset_name
-                    
-                    # Try to get tags from the asset's metadata
-                    tags_str = ""
-                    if hasattr(asset_file, "asset_data") and asset_file.asset_data:
-                        try:
-                            tags = asset_file.asset_data.tags
-                            tags_str = ", ".join(tag.name for tag in tags)
-                        except (AttributeError, TypeError):
-                            pass
-                    elif hasattr(asset_file, "metadata") and asset_file.metadata:
-                        try:
-                            tags = getattr(asset_file.metadata, "tags", None)
-                            if tags:
-                                tags_str = ", ".join(tag.name for tag in tags)
-                        except (AttributeError, TypeError):
-                            pass
-                    
-                    manage.edit_asset_tags = tags_str
-                    manage.edit_last_selection = current_selection_id
-            elif selected_count != 1:
-                # Clear tracking when not exactly one selected
-                if manage.edit_last_selection:
-                    manage.edit_last_selection = ""
-            
-            box.prop(manage, "edit_asset_name", text="Name")
-            box.prop(manage, "edit_asset_tags", text="Tags")
-            edit_row = box.row()
-            edit_row.enabled = selected_count == 1
-            edit_row.operator("qas.edit_selected_asset", text="Apply", icon="CHECKMARK")
-
-        layout.separator()
-
-        # ============ MOVE SECTION (middle) ============
-        if manage:
-            layout.label(text="Move", icon="ASSET_MANAGER")
-            box = layout.box()
-            box.prop(manage, "move_target_library", text="Library")
-            box.prop(manage, "move_target_catalog", text="Catalog")
-            box.prop(manage, "move_conflict_resolution", text="Overwrite")
-
-            # Move button
-            move_row = box.row()
-            move_row.scale_y = 1.2
-            move_row.enabled = selected_count > 0
-            move_row.operator("qas.move_selected_to_library", text="Move", icon="EXPORT")
+class QAS_OT_tag_remove(bpy.types.Operator):
+    """Remove the selected tag"""
+    bl_idname = "qas.tag_remove"
+    bl_label = "Remove Tag"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    @classmethod
+    def poll(cls, context):
+        wm = context.window_manager
+        if not hasattr(wm, "qas_metadata_edit"):
+            return False
+        meta = wm.qas_metadata_edit
+        return len(meta.edit_tags) > 0 and meta.active_tag_index >= 0
+    
+    def execute(self, context):
+        wm = context.window_manager
+        meta = wm.qas_metadata_edit
+        
+        if meta.active_tag_index < len(meta.edit_tags):
+            meta.edit_tags.remove(meta.active_tag_index)
+            # Adjust active index if needed
+            if meta.active_tag_index >= len(meta.edit_tags) and meta.active_tag_index > 0:
+                meta.active_tag_index -= 1
+        
+        return {'FINISHED'}
 
 
 class QAS_MT_asset_context_menu(bpy.types.Menu):
@@ -625,31 +334,466 @@ def draw_asset_context_menu(self, context):
     if getattr(context.space_data, "browse_mode", None) != "ASSETS":
         return
     
-    layout = self.layout
-    layout.separator()
-    layout.operator("qas.swap_selected_with_asset", text="Replace Selected Objects", icon="FILE_REFRESH")
-    layout.operator("qas.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
+    # Check if we're viewing local assets (Current File) or external library
+    params = context.space_data.params
+    asset_lib_ref = getattr(params, "asset_library_reference", None)
+    is_current_file = asset_lib_ref in ["LOCAL", "CURRENT"] or getattr(params, "asset_library_ref", None) == "LOCAL"
+    
+    # Only show context menu items for external library assets
+    if not is_current_file:
+        layout = self.layout
+        layout.separator()
+        layout.operator("qas.swap_selected_with_asset", text="Replace Selected Objects", icon="FILE_REFRESH")
+        layout.operator("qas.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
+
+
+def _get_asset_source_path(context):
+    """Get the source .blend file path for the active asset.
+    
+    Returns:
+        Path or None: Path to the source .blend file, or None if unavailable
+    """
+    from pathlib import Path
+    
+    asset = getattr(context, "asset", None)
+    if not asset:
+        return None
+    
+    def extract_blend_path(full_path_str):
+        """Extract just the .blend file path from a full asset path.
+        
+        Blender's full_path includes the internal datablock path, e.g.:
+        C:\\path\\to\\file.blend\\Material\\Asset Name
+        We need to extract just: C:\\path\\to\\file.blend
+        """
+        if not full_path_str:
+            return None
+        # Find .blend in the path and cut off everything after it
+        lower_path = full_path_str.lower()
+        blend_idx = lower_path.find('.blend')
+        if blend_idx != -1:
+            return Path(full_path_str[:blend_idx + 6])  # +6 for '.blend'
+        return None
+    
+    # Try full_path first (newer API)
+    if hasattr(asset, "full_path") and asset.full_path:
+        blend_path = extract_blend_path(asset.full_path)
+        if blend_path:
+            return blend_path
+    
+    # Try full_library_path
+    if hasattr(asset, "full_library_path") and asset.full_library_path:
+        blend_path = extract_blend_path(asset.full_library_path)
+        if blend_path:
+            return blend_path
+    
+    # Fallback: construct from library path + relative path
+    space = context.space_data
+    if space and hasattr(space, "params"):
+        params = space.params
+        lib_ref = getattr(params, "asset_library_reference", None)
+        if lib_ref and lib_ref not in EXCLUDED_LIBRARY_REFS:
+            # Get library path
+            for lib in context.preferences.filepaths.asset_libraries:
+                if lib.name == lib_ref:
+                    lib_path = Path(lib.path)
+                    # Get relative path from active file
+                    active_file = getattr(context, "active_file", None)
+                    if active_file and hasattr(active_file, "relative_path"):
+                        return lib_path / active_file.relative_path
+    
+    return None
+
+
+class QAS_PT_asset_metadata(bpy.types.Panel):
+    """Replacement for Blender's asset metadata panel with editable fields."""
+    
+    bl_space_type = 'FILE_BROWSER'
+    bl_region_type = 'TOOL_PROPS'
+    bl_label = "Asset Metadata"
+    bl_options = {'HIDE_HEADER'}
+    
+    @classmethod
+    def poll(cls, context):
+        # Same poll as original - needs to be in asset browser
+        space = context.space_data
+        if not space or space.type != "FILE_BROWSER":
+            return False
+        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
+            return False
+        return True
+    
+    def draw(self, context):
+        layout = self.layout
+        
+        asset = getattr(context, "asset", None)
+        if not asset:
+            layout.label(text="No asset selected")
+            return
+        
+        # Check if this is a local asset (editable natively by Blender)
+        is_local = bool(asset.local_id)
+        
+        if is_local:
+            # For local assets, draw native fields like Blender does
+            self._draw_local_asset(layout, context, asset)
+        else:
+            # For external assets, draw our editable fields
+            self._draw_external_asset(layout, context, asset)
+    
+    def _draw_local_asset(self, layout, context, asset):
+        """Draw editable fields for local assets (Current File) using our own properties."""
+        wm = context.window_manager
+        props = getattr(wm, "qas_save_props", None)
+        
+        if not props:
+            layout.label(text="Properties unavailable")
+            return
+        
+        # Sync props with current asset when asset changes
+        asset_name = asset.name
+        if props.last_asset_name != asset_name:
+            # New asset selected - initialize props from preferences
+            props.last_asset_name = asset_name
+            props.asset_display_name = asset_name
+            
+            from .properties import get_addon_preferences
+            prefs = get_addon_preferences(context)
+            if prefs:
+                props.asset_author = prefs.default_author
+                props.asset_description = prefs.default_description
+                props.asset_license = prefs.default_license
+                props.asset_copyright = prefs.default_copyright
+        
+        # Add top padding
+        layout.separator(factor=0.5)
+        
+        # Name (editable)
+        layout.prop(props, "asset_display_name", text="Name")
+        
+        # Source path (greyed out, non-editable)
+        col = layout.column(align=True)
+        col.enabled = False
+        col.label(text="Source")
+        col.label(text="Current File", icon='NONE')
+        
+        # Metadata fields (using our properties)
+        layout.prop(props, "asset_description", text="Description")
+        layout.prop(props, "asset_license", text="License")
+        layout.prop(props, "asset_copyright", text="Copyright")
+        layout.prop(props, "asset_author", text="Author")
+    
+    def _draw_external_asset(self, layout, context, asset):
+        """Draw editable fields for external assets (user libraries)."""
+        wm = context.window_manager
+        meta = getattr(wm, "qas_metadata_edit", None)
+        
+        if not meta:
+            layout.label(text="Metadata editing unavailable")
+            return
+        
+        source_path = _get_asset_source_path(context)
+        
+        # Check if we need to sync (different asset selected)
+        current_key = f"{source_path}:{asset.name}" if source_path else asset.name
+        stored_key = f"{meta.source_file}:{meta.asset_name}"
+        
+        if current_key != stored_key:
+            # New asset selected, sync the fields
+            meta.sync_from_asset(asset, source_path)
+        
+        # Add top padding
+        layout.separator(factor=0.5)
+        
+        # Editable name field
+        layout.prop(meta, "edit_name", text="Name")
+        
+        # Source path (greyed out, read-only display)
+        col = layout.column(align=True)
+        col.enabled = False
+        col.label(text="Source")
+        if source_path:
+            # Show truncated path
+            path_str = str(source_path)
+            if len(path_str) > 40:
+                path_str = "..." + path_str[-37:]
+            col.label(text=path_str, icon='NONE')
+        else:
+            col.label(text="Unknown", icon='NONE')
+        
+        # Editable metadata fields
+        layout.prop(meta, "edit_description", text="Description")
+        layout.prop(meta, "edit_license", text="License")
+        layout.prop(meta, "edit_copyright", text="Copyright")
+        layout.prop(meta, "edit_author", text="Author")
+
+
+# Store reference to original panels for restoration
+_original_metadata_panel = None
+_original_tags_panel = None
+
+
+class QAS_PT_asset_tags(bpy.types.Panel):
+    """Custom tags panel that replaces Blender's ASSETBROWSER_PT_metadata_tags."""
+    
+    bl_space_type = 'FILE_BROWSER'
+    bl_region_type = 'TOOL_PROPS'
+    bl_label = "Tags"
+    bl_order = 50  # After Preview (which is around 40)
+    
+    @classmethod
+    def poll(cls, context):
+        # Only show in Asset Browser with an active asset
+        space = context.space_data
+        if not space or space.type != "FILE_BROWSER":
+            return False
+        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
+            return False
+        
+        asset = getattr(context, "asset", None)
+        return asset is not None
+    
+    def draw(self, context):
+        layout = self.layout
+        asset = getattr(context, "asset", None)
+        
+        if not asset:
+            return
+        
+        is_local = bool(asset.local_id)
+        
+        if is_local:
+            # For local assets, show Blender's native tag editor
+            metadata = asset.local_id.asset_data
+            if metadata:
+                row = layout.row()
+                row.template_list(
+                    "ASSETBROWSER_UL_metadata_tags", "asset_tags",
+                    metadata, "tags",
+                    metadata, "active_tag",
+                    rows=3,
+                )
+                col = row.column(align=True)
+                col.operator("asset.tag_add", icon='ADD', text="")
+                col.operator("asset.tag_remove", icon='REMOVE', text="")
+                
+                # Small gap before filtering options
+                layout.separator(factor=0.3)
+        else:
+            # For external assets, show our custom editable tag list
+            wm = context.window_manager
+            meta = getattr(wm, "qas_metadata_edit", None)
+            
+            if not meta:
+                layout.label(text="Tags unavailable")
+                return
+            
+            # Ensure we're synced with the current asset
+            source_path = _get_asset_source_path(context)
+            current_key = f"{source_path}:{asset.name}" if source_path else asset.name
+            stored_key = f"{meta.source_file}:{meta.asset_name}"
+            
+            if current_key != stored_key:
+                meta.sync_from_asset(asset, source_path)
+            
+            row = layout.row()
+            row.template_list(
+                "QAS_UL_metadata_tags", "",
+                meta, "edit_tags",
+                meta, "active_tag_index",
+                rows=3,
+            )
+            col = row.column(align=True)
+            col.operator("qas.tag_add", icon='ADD', text="")
+            col.operator("qas.tag_remove", icon='REMOVE', text="")
+            
+            # Small gap before filtering options
+            layout.separator(factor=0.3)
+
+
+class QAS_PT_asset_actions(bpy.types.Panel):
+    """Panel for asset actions - Apply Changes and Remove Asset for external assets."""
+    
+    bl_space_type = 'FILE_BROWSER'
+    bl_region_type = 'TOOL_PROPS'
+    bl_label = "Actions"
+    bl_order = 60  # After Tags (50)
+    
+    @classmethod
+    def poll(cls, context):
+        # Only show for external assets (not from Current File)
+        space = context.space_data
+        if not space or space.type != "FILE_BROWSER":
+            return False
+        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
+            return False
+        
+        # Check if there's an active asset
+        asset = getattr(context, "asset", None)
+        if not asset:
+            return False
+        
+        # Check if this is a LOCAL asset (has local_id) - if so, don't show this panel
+        # This works correctly even in "All Libraries" view
+        is_local = bool(asset.local_id)
+        return not is_local
+    
+    def draw(self, context):
+        layout = self.layout
+        
+        wm = context.window_manager
+        meta = getattr(wm, "qas_metadata_edit", None)
+        manage = getattr(wm, "qas_manage_props", None)
+        
+        # Check if there are changes
+        has_changes = meta.has_changes() if meta else False
+        
+        # Apply Changes button (greyed out if no changes)
+        row = layout.row()
+        row.scale_y = 1.2
+        row.enabled = has_changes
+        row.operator("qas.apply_metadata_changes", text="Apply Changes", icon="CHECKMARK")
+        
+        # Move section
+        layout.separator()
+        layout.label(text="Move", icon="ASSET_MANAGER")
+        box = layout.box()
+        if manage:
+            box.prop(manage, "move_target_library", text="Library")
+            box.prop(manage, "move_target_catalog", text="Catalog")
+        
+        move_row = box.row()
+        move_row.scale_y = 1.2
+        move_row.operator("qas.move_selected_to_library", text="Move", icon="EXPORT")
+        
+        # Remove Asset button
+        layout.separator()
+        row = layout.row()
+        row.scale_y = 1.2
+        row.operator("qas.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
+
+
+class QAS_PT_save_to_library(bpy.types.Panel):
+    """Panel for saving local assets to a library - appears after Tags."""
+    
+    bl_space_type = 'FILE_BROWSER'
+    bl_region_type = 'TOOL_PROPS'
+    bl_label = "Save to Library"
+    bl_order = 100  # High number to appear after Tags
+    
+    @classmethod
+    def poll(cls, context):
+        # Only show for local assets (from Current File)
+        space = context.space_data
+        if not space or space.type != "FILE_BROWSER":
+            return False
+        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
+            return False
+        
+        # Check if there's an active asset that is LOCAL (has local_id)
+        # This works correctly even in "All Libraries" view
+        asset = getattr(context, "asset", None)
+        if not asset:
+            return False
+        
+        return bool(asset.local_id)
+    
+    def draw(self, context):
+        layout = self.layout
+        wm = context.window_manager
+        props = getattr(wm, "qas_save_props", None)
+        
+        if not props:
+            layout.label(text="Properties unavailable")
+            return
+        
+        # Target library dropdown
+        layout.prop(props, "selected_library", text="Library")
+        
+        # Catalog dropdown
+        layout.prop(props, "catalog", text="Catalog")
+        
+        # Show target path preview
+        from .properties import get_library_by_identifier
+        if props.selected_library and props.selected_library != "NONE":
+            lib_name, lib_path = get_library_by_identifier(props.selected_library)
+            if lib_path:
+                # Truncate long paths
+                if len(lib_path) > 35:
+                    lib_path = lib_path[:15] + "..." + lib_path[-17:]
+                layout.label(text=lib_path, icon="FILE_FOLDER")
+        
+        # Copy to Asset Library button
+        row = layout.row()
+        row.scale_y = 1.2
+        row.operator("qas.save_asset_to_library_direct", text="Copy to Asset Library", icon="EXPORT")
 
 
 classes = (
-    QAS_PT_asset_tools_panel,
-    QAS_PT_asset_manage,
-    QAS_PT_asset_bundler,
+    QAS_PT_asset_manager,
+    QAS_PT_save_hint,
+    QAS_UL_metadata_tags,
+    QAS_OT_tag_add,
+    QAS_OT_tag_remove,
     QAS_MT_asset_context_menu,
+    QAS_PT_asset_metadata,
+    QAS_PT_asset_tags,
+    QAS_PT_asset_actions,
+    QAS_PT_save_to_library,
 )
 
 
 def register():
+    global _original_metadata_panel, _original_tags_panel
+    
     for cls in classes:
         bpy.utils.register_class(cls)
     
     # Append to Asset Browser context menu
     bpy.types.ASSETBROWSER_MT_context_menu.append(draw_asset_context_menu)
+    
+    # Replace Blender's metadata panel with our custom one
+    try:
+        from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata
+        _original_metadata_panel = ASSETBROWSER_PT_metadata
+        bpy.utils.unregister_class(ASSETBROWSER_PT_metadata)
+        debug_print("[QAS] Replaced ASSETBROWSER_PT_metadata with custom panel")
+    except Exception as e:
+        debug_print(f"[QAS] Could not replace metadata panel: {e}")
+    
+    # Replace Blender's tags panel with our custom one
+    try:
+        from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_tags
+        _original_tags_panel = ASSETBROWSER_PT_metadata_tags
+        bpy.utils.unregister_class(ASSETBROWSER_PT_metadata_tags)
+        debug_print("[QAS] Replaced ASSETBROWSER_PT_metadata_tags with custom panel")
+    except Exception as e:
+        debug_print(f"[QAS] Could not replace tags panel: {e}")
 
 
 def unregister():
+    global _original_metadata_panel, _original_tags_panel
+    
     # Remove from Asset Browser context menu
     bpy.types.ASSETBROWSER_MT_context_menu.remove(draw_asset_context_menu)
     
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    
+    # Restore Blender's original metadata panel
+    if _original_metadata_panel:
+        try:
+            bpy.utils.register_class(_original_metadata_panel)
+            debug_print("[QAS] Restored original ASSETBROWSER_PT_metadata panel")
+        except Exception as e:
+            debug_print(f"[QAS] Could not restore metadata panel: {e}")
+        _original_metadata_panel = None
+    
+    # Restore Blender's original tags panel
+    if _original_tags_panel:
+        try:
+            bpy.utils.register_class(_original_tags_panel)
+            debug_print("[QAS] Restored original ASSETBROWSER_PT_metadata_tags panel")
+        except Exception as e:
+            debug_print(f"[QAS] Could not restore tags panel: {e}")
+        _original_tags_panel = None

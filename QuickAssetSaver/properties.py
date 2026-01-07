@@ -6,7 +6,7 @@ Handles user settings like library path, default author, and options.
 """
 
 import bpy
-from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import AddonPreferences, PropertyGroup
 
 # Constants
@@ -702,8 +702,7 @@ class QAS_ManageProperties(PropertyGroup):
     """
     Property group for managing existing assets in libraries.
 
-    Supports moving selected assets between libraries/catalogs,
-    renaming assets, updating tags, and swapping scene objects.
+    Supports moving selected assets between libraries/catalogs.
     """
 
     def get_target_libraries(self, context):
@@ -733,20 +732,7 @@ class QAS_ManageProperties(PropertyGroup):
         except (RuntimeError, OSError, UnicodeDecodeError):
             return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
-    # Edit properties (top of panel)
-    edit_asset_name: StringProperty(
-        name="Name",
-        description="New name for the selected asset (leave empty to keep current)",
-        default="",
-    )
-
-    edit_asset_tags: StringProperty(
-        name="Tags",
-        description="Comma-separated tags (replaces existing tags, leave empty to keep current)",
-        default="",
-    )
-
-    # Move properties (middle of panel)
+    # Move properties
     move_target_library: EnumProperty(
         name="Target Library",
         description="Library to move the selected assets into",
@@ -770,13 +756,141 @@ class QAS_ManageProperties(PropertyGroup):
         default="INCREMENT",
     )
 
-    # Internal tracking for edit field auto-population
-    edit_last_selection: StringProperty(
-        name="",
-        description="Internal: tracks last selected asset for edit auto-fill",
+
+class QAS_TagItem(bpy.types.PropertyGroup):
+    """Property group for a single tag in the tag list."""
+    
+    name: StringProperty(
+        name="Tag",
+        description="Tag name",
+        default="",
+    )
+
+
+class QAS_MetadataEditProperties(bpy.types.PropertyGroup):
+    """Property group for editing asset metadata in the sidebar panel."""
+    
+    # Track which asset we're editing (path + name)
+    source_file: StringProperty(
+        name="Source File",
+        description="Path to the .blend file containing this asset",
         default="",
         options={'HIDDEN', 'SKIP_SAVE'},
     )
+    
+    asset_name: StringProperty(
+        name="Asset Name", 
+        description="Internal: original name of the asset being edited",
+        default="",
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+    
+    # Editable metadata fields
+    edit_name: StringProperty(
+        name="Name",
+        description="Display name for this asset",
+        default="",
+    )
+    
+    edit_description: StringProperty(
+        name="Description",
+        description="Description of this asset",
+        default="",
+    )
+    
+    edit_license: StringProperty(
+        name="License",
+        description="License for this asset (e.g., CC0, CC-BY)",
+        default="",
+    )
+    
+    edit_copyright: StringProperty(
+        name="Copyright",
+        description="Copyright holder",
+        default="",
+    )
+    
+    edit_author: StringProperty(
+        name="Author",
+        description="Author of this asset",
+        default="",
+    )
+    
+    # Tag collection for UIList-based editing
+    edit_tags: CollectionProperty(
+        type=QAS_TagItem,
+        name="Tags",
+        description="Tags for this asset",
+    )
+    
+    active_tag_index: IntProperty(
+        name="Active Tag",
+        description="Index of the active tag",
+        default=0,
+    )
+    
+    # Track original values to detect changes
+    orig_name: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    orig_description: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    orig_license: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    orig_copyright: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    orig_author: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
+    orig_tags: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})  # Comma-delimited for comparison
+    
+    def get_tags_string(self):
+        """Get tags as a comma-separated string."""
+        return ", ".join(tag.name for tag in self.edit_tags if tag.name.strip())
+    
+    def set_tags_from_string(self, tags_string):
+        """Set tags from a comma-separated string."""
+        self.edit_tags.clear()
+        if tags_string:
+            for tag_name in tags_string.split(","):
+                tag_name = tag_name.strip()
+                if tag_name:
+                    tag = self.edit_tags.add()
+                    tag.name = tag_name
+    
+    def has_changes(self):
+        """Check if any fields have been modified from their original values."""
+        current_tags = self.get_tags_string()
+        return (
+            self.edit_name != self.orig_name or
+            self.edit_description != self.orig_description or
+            self.edit_license != self.orig_license or
+            self.edit_copyright != self.orig_copyright or
+            self.edit_author != self.orig_author or
+            current_tags != self.orig_tags
+        )
+    
+    def sync_from_asset(self, asset, source_path):
+        """Populate fields from an asset's current metadata."""
+        self.source_file = str(source_path) if source_path else ""
+        self.asset_name = asset.name if asset else ""
+        
+        metadata = asset.metadata if asset else None
+        
+        # Set current values
+        self.edit_name = asset.name if asset else ""
+        self.edit_description = metadata.description if metadata else ""
+        self.edit_license = metadata.license if metadata else ""
+        self.edit_copyright = metadata.copyright if metadata else ""
+        self.edit_author = metadata.author if metadata else ""
+        
+        # Populate tag collection
+        self.edit_tags.clear()
+        if metadata and metadata.tags:
+            for tag in metadata.tags:
+                new_tag = self.edit_tags.add()
+                new_tag.name = tag.name
+        
+        # Store originals for change detection (tags as comma string)
+        self.orig_name = self.edit_name
+        self.orig_description = self.edit_description
+        self.orig_license = self.edit_license
+        self.orig_copyright = self.edit_copyright
+        self.orig_author = self.edit_author
+        self.orig_tags = self.get_tags_string()
 
 
 classes = (
@@ -784,6 +898,8 @@ classes = (
     QASSaveProperties,
     QAS_BundlerProperties,
     QAS_ManageProperties,
+    QAS_TagItem,  # Must be registered before QAS_MetadataEditProperties
+    QAS_MetadataEditProperties,
 )
 
 
@@ -809,6 +925,9 @@ def register():
     bpy.types.WindowManager.qas_manage_props = bpy.props.PointerProperty(
         type=QAS_ManageProperties
     )
+    bpy.types.WindowManager.qas_metadata_edit = bpy.props.PointerProperty(
+        type=QAS_MetadataEditProperties
+    )
 
 
 def unregister():
@@ -818,6 +937,8 @@ def unregister():
     Removes property groups from WindowManager and unregisters classes
     in reverse order to ensure proper cleanup.
     """
+    if hasattr(bpy.types.WindowManager, "qas_metadata_edit"):
+        del bpy.types.WindowManager.qas_metadata_edit
     if hasattr(bpy.types.WindowManager, "qas_bundler_props"):
         del bpy.types.WindowManager.qas_bundler_props
     if hasattr(bpy.types.WindowManager, "qas_save_props"):
