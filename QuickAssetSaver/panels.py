@@ -45,8 +45,25 @@ def is_user_library(context, asset_lib_ref):
 
 
 # ---------------------------------------------------------------------------
-# Keybinding helpers
+# Helper functions
 # ---------------------------------------------------------------------------
+def _count_selected_assets(context):
+    """Count the number of selected assets in the Asset Browser.
+    
+    Returns:
+        int: Number of selected assets, or 0 if none or unavailable.
+    """
+    if hasattr(context, "selected_asset_files") and context.selected_asset_files is not None:
+        return len(context.selected_asset_files)
+    elif hasattr(context, "selected_assets") and context.selected_assets is not None:
+        return len(context.selected_assets)
+    elif hasattr(context.space_data, "files"):
+        try:
+            return len([f for f in context.space_data.files if getattr(f, "select", False)])
+        except (AttributeError, TypeError):
+            pass
+    return 0
+
 def _format_keymap_item(kmi):
     """Return a human-readable accelerator string for a keymap item."""
     parts = []
@@ -91,129 +108,6 @@ def _find_tool_props_keybinding():
     except Exception:
         pass
     return "N"
-
-
-# ============================================================================
-# QUICK ASSET MANAGER PANEL
-# ============================================================================
-
-class QAS_PT_asset_manager(bpy.types.Panel):
-    """Panel for bundling multiple assets from a user library and moving assets between libraries."""
-    bl_label = "Quick Asset Manager"
-    bl_idname = "QAS_PT_asset_manager"
-    bl_space_type = "FILE_BROWSER"
-    bl_region_type = "TOOLS"
-    bl_category = "Assets"
-    bl_order = 1
-    
-    @classmethod
-    def poll(cls, context):
-        """
-        Determine if the asset manager panel should be visible.
-
-        Only shows when:
-        - In Asset Browser (FILE_BROWSER with ASSETS browse mode)
-        - Browsing a user-configured library (not LOCAL, CURRENT, ALL, or ESSENTIALS)
-        """
-        space = context.space_data
-        if not space or space.type != "FILE_BROWSER":
-            return False
-
-        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
-            return False
-
-        params = space.params
-        if not hasattr(params, "asset_library_reference"):
-            return False
-
-        asset_lib_ref = params.asset_library_reference
-
-        # Check if this is a user-configured library (not built-in)
-        if not is_user_library(context, asset_lib_ref):
-            return False
-
-        # Also check the newer API attribute if it exists
-        if hasattr(params, "asset_library_ref"):
-            newer_ref = params.asset_library_ref
-            if not is_user_library(context, newer_ref):
-                return False
-
-        return True
-
-    def draw(self, context):
-        """Draw the combined Asset Manager panel UI."""
-        layout = self.layout
-        wm = context.window_manager
-        bundler_props = wm.qas_bundler_props
-        manage_props = getattr(wm, "qas_manage_props", None)
-
-        # Count selected assets
-        selected_count = 0
-        if hasattr(context, "selected_asset_files") and context.selected_asset_files is not None:
-            selected_count = len(context.selected_asset_files)
-        elif hasattr(context, "selected_assets") and context.selected_assets is not None:
-            selected_count = len(context.selected_assets)
-        elif hasattr(context.space_data, "activate_operator_properties"):
-            try:
-                selected_files = [f for f in context.space_data.files if f.select]
-                selected_count = len(selected_files)
-            except (AttributeError, TypeError):
-                selected_count = 0
-
-        self.mover_section(layout, context, manage_props, selected_count)
-        self.bundler_section(layout, context, bundler_props, selected_count)
-        
-    def bundler_section(self, layout, context, bundler_props, selected_count):
-        box = layout.box()
-        box.label(text="Bundle Assets", icon="PACKAGE")
-        
-        row = box.row()
-        row.prop(bundler_props, "output_name", text="Name", icon="FILE_BLEND")
-        
-        row = box.row()
-        row.prop(bundler_props, "save_path", text="Path", icon="FOLDER_REDIRECT")
-        
-        row = box.row()
-        row.prop(bundler_props, "duplicate_mode", text="Overwrite", icon="DUPLICATE")
-        
-        box.prop(bundler_props, "copy_catalog")
-
-        row = box.row()
-        row.scale_y = 1.2
-        row.enabled = selected_count > 0
-        if selected_count > 1:
-            row.operator("qas.bundle_assets", text=f"Bundle {selected_count} Assets", icon="PACKAGE")
-        elif selected_count == 1:
-            row.operator("qas.bundle_assets", text="Bundle Asset", icon="PACKAGE")
-        else:
-            row.operator("qas.bundle_assets", text="Bundle Assets", icon="PACKAGE")
-        
-    def mover_section(self, layout, context, manage_props, selected_count):
-        layout.separator()
-        
-        box = layout.box()
-        box.label(text="Move Assets", icon="EXPORT")
-        
-        if manage_props:
-            box.prop(manage_props, "move_target_library", text="Library")
-            box.prop(manage_props, "move_target_catalog", text="Catalog")
-
-        row = box.row()
-        row.scale_y = 1.2
-        row.enabled = selected_count > 0
-        if selected_count > 1:
-            row.operator("qas.move_selected_to_library", text=f"Move {selected_count} Assets", icon="EXPORT")
-        elif selected_count == 1:
-            row.operator("qas.move_selected_to_library", text="Move Asset", icon="EXPORT")
-        else:
-            row.operator("qas.move_selected_to_library", text="Move Assets", icon="EXPORT")
-
-        # Selection info
-        if selected_count == 0:
-            layout.separator()
-            info_box = layout.box()
-            info_box.label(text="No assets selected", icon="INFO")
-            info_box.label(text="Select assets to bundle or move", icon="BLANK1")
 
 
 # ============================================================================
@@ -347,6 +241,76 @@ def draw_asset_context_menu(self, context):
         layout.operator("qas.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
 
 
+# ============================================================================
+# BULK OPERATIONS PANEL (RIGHT SIDE - for 2+ assets)
+# ============================================================================
+
+class QAS_PT_bulk_operations(bpy.types.Panel):
+    """Panel for bulk operations when 2+ assets are selected."""
+    
+    bl_space_type = 'FILE_BROWSER'
+    bl_region_type = 'TOOL_PROPS'
+    bl_label = "Bulk Operations"
+    bl_order = 1  # Show first
+    
+    @classmethod
+    def poll(cls, context):
+        # Only show in Asset Browser
+        space = context.space_data
+        if not space or space.type != "FILE_BROWSER":
+            return False
+        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
+            return False
+        
+        # Only show when 2+ assets selected
+        selected_count = _count_selected_assets(context)
+        if selected_count < 2:
+            return False
+        
+        # Only show in user libraries (not Current File)
+        params = space.params
+        if not hasattr(params, "asset_library_reference"):
+            return False
+        asset_lib_ref = params.asset_library_reference
+        return is_user_library(context, asset_lib_ref)
+    
+    def draw(self, context):
+        layout = self.layout
+        wm = context.window_manager
+        bundler_props = wm.qas_bundler_props
+        manage_props = getattr(wm, "qas_manage_props", None)
+        
+        selected_count = _count_selected_assets(context)
+        
+        # Move section
+        layout.label(text=f"{selected_count} Assets Selected", icon="ASSET_MANAGER")
+        layout.separator()
+        
+        box = layout.box()
+        box.label(text="Move Assets", icon="EXPORT")
+        if manage_props:
+            box.prop(manage_props, "move_target_library", text="Library")
+            box.prop(manage_props, "move_target_catalog", text="Catalog")
+        
+        row = box.row()
+        row.scale_y = 1.2
+        row.operator("qas.move_selected_to_library", text=f"Move {selected_count} Assets", icon="EXPORT")
+        
+        layout.separator()
+        
+        # Bundle section
+        box = layout.box()
+        box.label(text="Bundle Assets", icon="PACKAGE")
+        box.prop(bundler_props, "output_name", text="Name")
+        box.prop(bundler_props, "save_path", text="Path")
+        box.prop(bundler_props, "duplicate_mode", text="Overwrite")
+        box.prop(bundler_props, "copy_catalog")
+        
+        row = box.row()
+        row.scale_y = 1.2
+        row.operator("qas.bundle_assets", text=f"Bundle {selected_count} Assets", icon="PACKAGE")
+
+
 def _get_asset_source_path(context):
     """Get the source .blend file path for the active asset.
     
@@ -421,6 +385,12 @@ class QAS_PT_asset_metadata(bpy.types.Panel):
             return False
         if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
             return False
+        
+        # Hide when 2+ assets selected (bulk ops panel takes over)
+        selected_count = _count_selected_assets(context)
+        if selected_count >= 2:
+            return False
+        
         return True
     
     def draw(self, context):
@@ -550,6 +520,11 @@ class QAS_PT_asset_tags(bpy.types.Panel):
         if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
             return False
         
+        # Hide when 2+ assets selected (bulk ops panel takes over)
+        selected_count = _count_selected_assets(context)
+        if selected_count >= 2:
+            return False
+        
         asset = getattr(context, "asset", None)
         return asset is not None
     
@@ -628,6 +603,11 @@ class QAS_PT_asset_actions(bpy.types.Panel):
         if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
             return False
         
+        # Hide when 2+ assets selected (bulk ops panel takes over)
+        selected_count = _count_selected_assets(context)
+        if selected_count >= 2:
+            return False
+        
         # Check if there's an active asset
         asset = getattr(context, "asset", None)
         if not asset:
@@ -690,6 +670,11 @@ class QAS_PT_save_to_library(bpy.types.Panel):
         if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
             return False
         
+        # Hide when 2+ assets selected (not applicable to local assets bulk)
+        selected_count = _count_selected_assets(context)
+        if selected_count >= 2:
+            return False
+        
         # Check if there's an active asset that is LOCAL (has local_id)
         # This works correctly even in "All Libraries" view
         asset = getattr(context, "asset", None)
@@ -730,8 +715,8 @@ class QAS_PT_save_to_library(bpy.types.Panel):
 
 
 classes = (
-    QAS_PT_asset_manager,
     QAS_PT_save_hint,
+    QAS_PT_bulk_operations,
     QAS_UL_metadata_tags,
     QAS_OT_tag_add,
     QAS_OT_tag_remove,
