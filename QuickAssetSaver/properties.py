@@ -431,11 +431,20 @@ class QASSaveProperties(PropertyGroup):
         default="",
         options={"SKIP_SAVE", "HIDDEN"},
     )
+    
+    def _update_display_name(self, context):
+        """Update the sanitized file name when display name changes."""
+        from .operators import sanitize_name
+        if self.asset_display_name:
+            self.asset_file_name = sanitize_name(self.asset_display_name)
+        else:
+            self.asset_file_name = ""
 
     asset_display_name: StringProperty(
         name="Name",
         description="Display name of the asset as it will appear in the library",
         default="",
+        update=_update_display_name,
     )
 
     asset_file_name: StringProperty(

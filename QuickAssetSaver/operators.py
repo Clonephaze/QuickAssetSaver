@@ -116,8 +116,8 @@ def sanitize_name(name, max_length=128):
     Note:
         - Removes path separators (/ and \\) to prevent directory traversal
         - Replaces invalid characters (<>:"|?*) with underscores
-        - Replaces spaces with underscores for better compatibility
-        - Strips leading/trailing dots and underscores
+        - Preserves spaces (they're valid on all modern operating systems)
+        - Strips leading/trailing dots and spaces
         - Returns "asset" as fallback for empty or invalid inputs
     """
     if not name or not isinstance(name, str):
@@ -130,8 +130,9 @@ def sanitize_name(name, max_length=128):
     # Windows: < > : " | ? * and control characters (\x00-\x1f)
     invalid_chars = r'[<>:"|?*\x00-\x1f]'
     sanitized = re.sub(invalid_chars, "_", name)
-    sanitized = sanitized.replace(" ", "_")
-    sanitized = sanitized.strip("._")
+    
+    # Strip leading/trailing dots and spaces (but preserve spaces within the name)
+    sanitized = sanitized.strip(". ")
 
     if not sanitized:
         sanitized = "asset"
