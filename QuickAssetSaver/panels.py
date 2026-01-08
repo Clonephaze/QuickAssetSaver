@@ -1,23 +1,15 @@
-"""
-Panels Module - Quick Asset Saver
-==================================
-UI integration for panels in the Asset Browser.
-Provides a side panel for saving assets to libraries.
-"""
 
 import bpy
 
 from .properties import DEBUG_MODE
 
-# UI Constants
-MAX_PATH_DISPLAY_LENGTH = 40  # Characters before splitting path display
-LARGE_SELECTION_THRESHOLD = 10  # Show warning when selecting more than this many assets
-
-# Excluded library references (built-in libraries)
+MAX_PATH_DISPLAY_LENGTH = 40
+LARGE_SELECTION_THRESHOLD = 10
 EXCLUDED_LIBRARY_REFS = ["LOCAL", "CURRENT", "ALL", "ESSENTIALS"]
 
+_original_preview_panel_poll = None
+
 def debug_print(*args, **kwargs):
-    """Print debug messages only when DEBUG_MODE is enabled."""
     if DEBUG_MODE:
         print(*args, **kwargs)
 
@@ -44,9 +36,6 @@ def is_user_library(context, asset_lib_ref):
     return False
 
 
-# ---------------------------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------------------------
 def _count_selected_assets(context):
     """Count the number of selected assets in the Asset Browser.
     
@@ -110,10 +99,6 @@ def _find_tool_props_keybinding():
     return "N"
 
 
-# ============================================================================
-# CURRENT FILE SAVE PANEL HINT (Temporary)
-# ============================================================================
-
 class QAS_PT_save_hint(bpy.types.Panel):
     """Hint panel shown in Current File to direct users to the right-side Save panel."""
     bl_label = "Quick Asset Saver"
@@ -153,7 +138,6 @@ class QAS_UL_metadata_tags(bpy.types.UIList):
     bl_idname = "QAS_UL_metadata_tags"
     
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        # item is a QAS_TagItem
         if self.layout_type in {'DEFAULT', 'COMPACT'}:
             layout.prop(item, "name", text="", emboss=False, icon='NONE')
         elif self.layout_type == 'GRID':
@@ -426,6 +410,9 @@ class QAS_PT_asset_metadata(bpy.types.Panel):
             # New asset selected - initialize props from preferences
             props.last_asset_name = asset_name
             props.asset_display_name = asset_name
+            # Manually populate asset_file_name since update callback doesn't fire on direct assignment
+            from .operators import sanitize_name
+            props.asset_file_name = sanitize_name(asset_name)
             
             from .properties import get_addon_preferences
             prefs = get_addon_preferences(context)
@@ -552,7 +539,6 @@ class QAS_PT_asset_tags(bpy.types.Panel):
                 col.operator("asset.tag_add", icon='ADD', text="")
                 col.operator("asset.tag_remove", icon='REMOVE', text="")
                 
-                # Small gap before filtering options
                 layout.separator(factor=0.3)
         else:
             # For external assets, show our custom editable tag list
@@ -708,6 +694,14 @@ class QAS_PT_save_to_library(bpy.types.Panel):
                     lib_path = lib_path[:15] + "..." + lib_path[-17:]
                 layout.label(text=lib_path, icon="FILE_FOLDER")
         
+        # Warn about collection asset previews
+        asset = getattr(context, "asset", None)
+        if asset and asset.local_id and isinstance(asset.local_id, bpy.types.Collection):
+            box = layout.box()
+            col = box.column(align=True)
+            col.label(text="Collection previews may need", icon="INFO")
+            col.label(text="regeneration after saving.")
+        
         # Copy to Asset Library button
         row = layout.row()
         row.scale_y = 1.2
@@ -729,12 +723,11 @@ classes = (
 
 
 def register():
-    global _original_metadata_panel, _original_tags_panel
+    global _original_metadata_panel, _original_tags_panel, _original_preview_panel_poll
     
     for cls in classes:
         bpy.utils.register_class(cls)
     
-    # Append to Asset Browser context menu
     bpy.types.ASSETBROWSER_MT_context_menu.append(draw_asset_context_menu)
     
     # Replace Blender's metadata panel with our custom one
@@ -754,12 +747,30 @@ def register():
         debug_print("[QAS] Replaced ASSETBROWSER_PT_metadata_tags with custom panel")
     except Exception as e:
         debug_print(f"[QAS] Could not replace tags panel: {e}")
+    
+    # Override preview panel poll to hide when 2+ assets selected
+    try:
+        from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_preview
+        _original_preview_panel_poll = ASSETBROWSER_PT_metadata_preview.poll
+        
+        @classmethod
+        def custom_preview_poll(cls, context):
+            # Hide when 2+ assets selected (bulk ops mode)
+            selected_count = _count_selected_assets(context)
+            if selected_count >= 2:
+                return False
+            # Otherwise use original poll logic
+            return _original_preview_panel_poll(context)
+        
+        ASSETBROWSER_PT_metadata_preview.poll = custom_preview_poll
+        debug_print("[QAS] Overrode ASSETBROWSER_PT_metadata_preview poll method")
+    except Exception as e:
+        debug_print(f"[QAS] Could not override preview panel poll: {e}")
 
 
 def unregister():
-    global _original_metadata_panel, _original_tags_panel
+    global _original_metadata_panel, _original_tags_panel, _original_preview_panel_poll
     
-    # Remove from Asset Browser context menu
     bpy.types.ASSETBROWSER_MT_context_menu.remove(draw_asset_context_menu)
     
     for cls in reversed(classes):
@@ -782,3 +793,13 @@ def unregister():
         except Exception as e:
             debug_print(f"[QAS] Could not restore tags panel: {e}")
         _original_tags_panel = None
+    
+    # Restore preview panel poll method
+    if _original_preview_panel_poll:
+        try:
+            from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_preview
+            ASSETBROWSER_PT_metadata_preview.poll = _original_preview_panel_poll
+            debug_print("[QAS] Restored original ASSETBROWSER_PT_metadata_preview poll")
+        except Exception as e:
+            debug_print(f"[QAS] Could not restore preview panel poll: {e}")
+        _original_preview_panel_poll = None

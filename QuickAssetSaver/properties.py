@@ -9,32 +9,20 @@ import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, StringProperty
 from bpy.types import AddonPreferences, PropertyGroup
 
-# Constants
-MAX_FILENAME_AFFIX_LENGTH = 32  # Maximum length for prefix/suffix
-NONE_LIBRARY_IDENTIFIER = "NONE"  # Identifier for "no library selected"
-DEBUG_MODE = False  # Set to True for debug output
+MAX_FILENAME_AFFIX_LENGTH = 32
+NONE_LIBRARY_IDENTIFIER = "NONE"
+DEBUG_MODE = False
 
-# Cache for enum items to prevent garbage collection
-# Blender's EnumProperty callbacks can have strings GC'd before display
+# Must cache enum items or Blender garbage-collects strings before display
 _LIBRARY_ENUM_CACHE = []
 
 
 def debug_print(*args, **kwargs):
-    """Print debug messages only when DEBUG_MODE is enabled."""
     if DEBUG_MODE:
         print(*args, **kwargs)
 
 
 def get_library_path_by_name(library_name):
-    """
-    Get the library path for a given library name.
-
-    Args:
-        library_name: Name of the asset library
-
-    Returns:
-        str: Library path or None if not found
-    """
     if not library_name or library_name == NONE_LIBRARY_IDENTIFIER:
         return None
 
@@ -47,19 +35,9 @@ def get_library_path_by_name(library_name):
 
 
 def get_library_by_identifier(identifier):
-    """
-    Get library name and path from an ASCII-safe identifier.
-    
-    Args:
-        identifier: ASCII-safe identifier (e.g., "LIB_0", "LIB_1")
-    
-    Returns:
-        tuple: (library_name, library_path) or (None, None) if not found
-    """
     if not identifier or identifier == NONE_LIBRARY_IDENTIFIER:
         return None, None
     
-    # Extract index from identifier
     if identifier.startswith("LIB_"):
         try:
             index = int(identifier.split("_")[1])
@@ -69,7 +47,6 @@ def get_library_by_identifier(identifier):
                 if 0 <= index < len(asset_libs):
                     lib = asset_libs[index]
                     if hasattr(lib, "name") and hasattr(lib, "path"):
-                        # Safely get name and path, handling encoding issues
                         try:
                             lib_name = str(lib.name) if lib.name else f"Library_{index}"
                         except (UnicodeDecodeError, UnicodeEncodeError):
@@ -88,25 +65,8 @@ def get_library_by_identifier(identifier):
 
 
 def build_library_enum_items():
-    """
-    Build enum items for asset library selection.
-
-    Retrieves user-configured asset libraries from Blender preferences
-    and formats them as enum items for property dropdowns.
-
-    Note:
-        Uses ASCII-safe identifiers (LIB_0, LIB_1, etc.) to avoid Unicode
-        encoding issues in the identifier field.
-        Display names (labels) CAN contain Unicode - Chinese, etc. is fine.
-        Only the identifier must be ASCII-safe.
-        
-        Items are cached in _LIBRARY_ENUM_CACHE to prevent garbage collection
-        before Blender can display them (known Blender API issue).
-
-    Returns:
-        list: List of tuples in format (identifier, name, description, icon, index)
-              Returns error item if no libraries are configured
-    """
+    # EnumProperty identifiers must be ASCII-safe; labels support Unicode
+    # Cache required or Blender GCs strings before display
     global _LIBRARY_ENUM_CACHE
     
     items = []
@@ -129,18 +89,15 @@ def build_library_enum_items():
                         except (UnicodeDecodeError, UnicodeEncodeError, AttributeError):
                             lib_path = "<unknown>"
                         
-                        # Use the actual library name as display name
-                        # EnumProperty labels fully support Unicode (Chinese, etc.)
-                        # Only the identifier needs to be ASCII-safe
                         display_name = lib_name
                         
                         debug_print(f"[QAS Enum Debug] Adding library {idx}: id=LIB_{idx}, name={display_name}, path={lib_path}")
                         
                         items.append(
                             (
-                                f"LIB_{idx}",      # ASCII-safe identifier (required)
-                                display_name,      # Display name - Unicode OK!
-                                f"Save to: {lib_path}",  # Full path in tooltip
+                                f"LIB_{idx}",
+                                display_name,
+                                f"Save to: {lib_path}",
                                 "ASSET_MANAGER",
                                 idx,
                             )
@@ -162,24 +119,12 @@ def build_library_enum_items():
             )
         )
 
-    # Cache items to prevent garbage collection before Blender displays them
     _LIBRARY_ENUM_CACHE = items
     debug_print(f"[QAS Enum Debug] Cached {len(_LIBRARY_ENUM_CACHE)} library items")
     return _LIBRARY_ENUM_CACHE
 
 
 def validate_string_length(value, max_length, property_name):
-    """
-    Validate and truncate string to maximum length.
-
-    Args:
-        value: String value to validate
-        max_length: Maximum allowed length
-        property_name: Name of property for logging
-
-    Returns:
-        str: Validated (possibly truncated) string
-    """
     if not value:
         return value
 
@@ -193,21 +138,9 @@ def validate_string_length(value, max_length, property_name):
 
 
 class QuickAssetSaverPreferences(AddonPreferences):
-    """
-    Addon preferences for Quick Asset Saver.
-
-    Stores user preferences including:
-    - Default asset library
-    - Default metadata (author, description, license, copyright)
-    - File organization settings (catalog subfolders)
-    - Filename conventions (prefix, suffix, date)
-    - Auto-refresh behavior
-    """
-
     bl_idname = __package__
 
     def get_preference_libraries(self, context):
-        """Get asset libraries for preferences dropdown."""
         return build_library_enum_items()
 
     selected_library: EnumProperty(
@@ -253,7 +186,6 @@ class QuickAssetSaverPreferences(AddonPreferences):
     )
 
     def update_filename_prefix(self, context):
-        """Validate filename prefix length."""
         if len(self.filename_prefix) > MAX_FILENAME_AFFIX_LENGTH:
             print(
                 f"Warning: Filename prefix too long, truncating to {MAX_FILENAME_AFFIX_LENGTH} characters"
@@ -261,7 +193,6 @@ class QuickAssetSaverPreferences(AddonPreferences):
             self.filename_prefix = self.filename_prefix[:MAX_FILENAME_AFFIX_LENGTH]
 
     def update_filename_suffix(self, context):
-        """Validate filename suffix length."""
         if len(self.filename_suffix) > MAX_FILENAME_AFFIX_LENGTH:
             print(
                 f"Warning: Filename suffix too long, truncating to {MAX_FILENAME_AFFIX_LENGTH} characters"
@@ -300,19 +231,6 @@ class QuickAssetSaverPreferences(AddonPreferences):
     )
 
     def draw(self, context):
-        """
-        Draw the addon preferences UI.
-
-        Displays settings for:
-        - Default asset library selection
-        - File organization options
-        - Filename conventions
-        - Default metadata values
-        - Auto-refresh behavior
-
-        Args:
-            context: Blender context
-        """
         layout = self.layout
         layout.label(text="Default Asset Library:")
         asset_row = layout.row()
@@ -323,7 +241,6 @@ class QuickAssetSaverPreferences(AddonPreferences):
         )
 
         if self.selected_library and self.selected_library != NONE_LIBRARY_IDENTIFIER:
-            # Get the actual library name and path from identifier
             library_name, library_path = get_library_by_identifier(self.selected_library)
             if library_path:
                 row = layout.row()
@@ -356,44 +273,18 @@ class QuickAssetSaverPreferences(AddonPreferences):
 
 
 class QASSaveProperties(PropertyGroup):
-    """
-    Property group for asset saving workflow.
-
-    Stores per-asset settings during the save process including:
-    - Target library selection
-    - Asset metadata (name, author, description, tags, license, copyright)
-    - Catalog assignment
-    - Conflict resolution strategy
-    """
-
     def get_asset_libraries(self, context):
-        """Get asset libraries for property dropdown."""
         return build_library_enum_items()
 
     def get_catalogs(self, context):
-        """
-        Get available catalogs from the selected library.
-
-        Reads the blender_assets.cats.txt file from the selected library
-        and returns catalog options for the enum property.
-        Handles errors gracefully to prevent UI crashes.
-
-        Args:
-            context: Blender context
-
-        Returns:
-            list: List of catalog enum items (identifier, name, description, icon, index)
-                  Returns "Unassigned" if no library selected or no catalogs found
-        """
+        # Errors here must be caught to prevent UI crashes
         try:
             from .operators import get_catalogs_from_cdf
         except ImportError as e:
-            # If import fails, return default
             debug_print(f"Warning: Could not import get_catalogs_from_cdf: {e}")
             return [("UNASSIGNED", "Unassigned", "No catalog assigned", "NONE", 0)]
 
         try:
-            # Get the actual library path from the identifier
             library_identifier = (
                 self.selected_library
                 if self.selected_library != NONE_LIBRARY_IDENTIFIER
@@ -427,13 +318,12 @@ class QASSaveProperties(PropertyGroup):
 
     last_asset_name: StringProperty(
         name="Last Asset Name",
-        description="Internal tracking of last selected asset to prevent overwriting user edits",
+        description="Internal tracking of last selected asset",
         default="",
         options={"SKIP_SAVE", "HIDDEN"},
     )
     
     def _update_display_name(self, context):
-        """Update the sanitized file name when display name changes."""
         from .operators import sanitize_name
         if self.asset_display_name:
             self.asset_file_name = sanitize_name(self.asset_display_name)
@@ -449,7 +339,7 @@ class QASSaveProperties(PropertyGroup):
 
     asset_file_name: StringProperty(
         name="File Name",
-        description="Sanitized filename (read-only, auto-generated from asset name)",
+        description="Auto-generated from asset name",
         default="",
         options={"SKIP_SAVE"},
     )
@@ -517,47 +407,32 @@ class QASSaveProperties(PropertyGroup):
 
 
 def _migrate_old_library_format(addon_prefs, preferences):
-    """
-    Migrate old path-based or name-based library settings to new identifier format.
-
-    Old versions stored library paths or names directly in selected_library.
-    New versions store ASCII-safe identifiers (LIB_0, LIB_1) to avoid Unicode issues.
-    This function detects and converts old format to new format.
-
-    Args:
-        addon_prefs: QuickAssetSaverPreferences instance
-        preferences: Blender preferences object
-    """
+    # Converts old path/name-based library settings to new LIB_N identifier format
     try:
         current_value = addon_prefs.selected_library
         
-        # Check if current value is already in new format
         if current_value and current_value.startswith("LIB_"):
-            return  # Already migrated
+            return
         
         # Check if current value is a built-in identifier
         if current_value in (NONE_LIBRARY_IDENTIFIER, "LOCAL", "CURRENT", "ALL", "ESSENTIALS"):
             return
         
         if current_value:
-            # Try to find matching library by name or path
             if hasattr(preferences, "filepaths") and hasattr(
                 preferences.filepaths, "asset_libraries"
             ):
                 asset_libs = preferences.filepaths.asset_libraries
                 
-                # First try to match by name
                 for idx, lib in enumerate(asset_libs):
                     try:
                         if hasattr(lib, "name") and lib.name == current_value:
-                            # Found by name
                             addon_prefs.selected_library = f"LIB_{idx}"
                             print(f"Migrated library setting to: LIB_{idx} ({lib.name})")
                             return
                     except (AttributeError, UnicodeDecodeError):
                         continue
                 
-                # Then try to match by path
                 for idx, lib in enumerate(asset_libs):
                     try:
                         if hasattr(lib, "path") and lib.path:
@@ -571,43 +446,23 @@ def _migrate_old_library_format(addon_prefs, preferences):
                     except (OSError, ValueError, TypeError, UnicodeDecodeError):
                         continue
                 
-                # If we couldn't migrate, use default
                 print("Warning: Could not migrate old library format. Using default library.")
                 _initialize_default_library(addon_prefs, preferences)
     except Exception as e:
         print(f"Warning during library format migration: {e}")
-        # Continue anyway - we'll use default library
 
 
 def get_addon_preferences(context=None):
-    """
-    Get the addon preferences instance.
-
-    Retrieves the Quick Asset Saver addon preferences from Blender's
-    addon system. Automatically initializes default library if none selected.
-    Handles migration from old path-based format to new identifier-based format.
-
-    Args:
-        context: Blender context (optional, uses bpy.context if None)
-
-    Returns:
-        QuickAssetSaverPreferences: The addon preferences instance
-
-    Note:
-        Side effect: Sets selected_library to first available library
-        if none is currently selected. This ensures a valid default.
-        Also performs automatic migration from old storage formats.
-    """
+    # Auto-initializes default library if none selected
+    # Performs automatic migration from old formats
     if context is None:
         context = bpy.context
 
     preferences = context.preferences
     addon_prefs = preferences.addons[__package__].preferences
 
-    # Try to migrate old format if needed
     _migrate_old_library_format(addon_prefs, preferences)
 
-    # Initialize default library if none selected
     if (
         not addon_prefs.selected_library
         or addon_prefs.selected_library == NONE_LIBRARY_IDENTIFIER
@@ -618,16 +473,6 @@ def get_addon_preferences(context=None):
 
 
 def _initialize_default_library(addon_prefs, preferences):
-    """
-    Initialize the default library selection.
-
-    Helper function to set the selected_library to the first available
-    library if no library is currently selected. Uses ASCII-safe identifier.
-
-    Args:
-        addon_prefs: QuickAssetSaverPreferences instance
-        preferences: Blender preferences object
-    """
     try:
         if hasattr(preferences, "filepaths") and hasattr(
             preferences.filepaths, "asset_libraries"
@@ -638,23 +483,12 @@ def _initialize_default_library(addon_prefs, preferences):
                 and hasattr(asset_libs[0], "name")
                 and asset_libs[0].name
             ):
-                # Use ASCII-safe identifier instead of name/path
                 addon_prefs.selected_library = "LIB_0"
     except (AttributeError, IndexError, TypeError) as e:
         print(f"Warning: Could not initialize default library: {e}")
 
 
 class QAS_BundlerProperties(PropertyGroup):
-    """
-    Property group for Quick Asset Bundler settings.
-
-    Stores bundling configuration including:
-    - Output bundle name
-    - Save path for the bundle file
-    - Duplicate handling strategy (overwrite vs increment)
-    - Catalog file copy option
-    """
-
     output_name: StringProperty(
         name="Bundle Name",
         description="Base name for the bundle file (date will be appended automatically)",
@@ -708,12 +542,6 @@ class QAS_BundlerProperties(PropertyGroup):
 
 
 class QAS_ManageProperties(PropertyGroup):
-    """
-    Property group for managing existing assets in libraries.
-
-    Supports moving selected assets between libraries/catalogs.
-    """
-
     def get_target_libraries(self, context):
         return build_library_enum_items()
 
@@ -767,8 +595,6 @@ class QAS_ManageProperties(PropertyGroup):
 
 
 class QAS_TagItem(bpy.types.PropertyGroup):
-    """Property group for a single tag in the tag list."""
-    
     name: StringProperty(
         name="Tag",
         description="Tag name",
@@ -777,9 +603,6 @@ class QAS_TagItem(bpy.types.PropertyGroup):
 
 
 class QAS_MetadataEditProperties(bpy.types.PropertyGroup):
-    """Property group for editing asset metadata in the sidebar panel."""
-    
-    # Track which asset we're editing (path + name)
     source_file: StringProperty(
         name="Source File",
         description="Path to the .blend file containing this asset",
@@ -794,7 +617,6 @@ class QAS_MetadataEditProperties(bpy.types.PropertyGroup):
         options={'HIDDEN', 'SKIP_SAVE'},
     )
     
-    # Editable metadata fields
     edit_name: StringProperty(
         name="Name",
         description="Display name for this asset",
@@ -825,7 +647,6 @@ class QAS_MetadataEditProperties(bpy.types.PropertyGroup):
         default="",
     )
     
-    # Tag collection for UIList-based editing
     edit_tags: CollectionProperty(
         type=QAS_TagItem,
         name="Tags",
@@ -838,20 +659,17 @@ class QAS_MetadataEditProperties(bpy.types.PropertyGroup):
         default=0,
     )
     
-    # Track original values to detect changes
     orig_name: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     orig_description: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     orig_license: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     orig_copyright: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     orig_author: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
-    orig_tags: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})  # Comma-delimited for comparison
+    orig_tags: StringProperty(default="", options={'HIDDEN', 'SKIP_SAVE'})
     
     def get_tags_string(self):
-        """Get tags as a comma-separated string."""
         return ", ".join(tag.name for tag in self.edit_tags if tag.name.strip())
     
     def set_tags_from_string(self, tags_string):
-        """Set tags from a comma-separated string."""
         self.edit_tags.clear()
         if tags_string:
             for tag_name in tags_string.split(","):
@@ -861,7 +679,6 @@ class QAS_MetadataEditProperties(bpy.types.PropertyGroup):
                     tag.name = tag_name
     
     def has_changes(self):
-        """Check if any fields have been modified from their original values."""
         current_tags = self.get_tags_string()
         return (
             self.edit_name != self.orig_name or
@@ -873,7 +690,6 @@ class QAS_MetadataEditProperties(bpy.types.PropertyGroup):
         )
     
     def sync_from_asset(self, asset, source_path):
-        """Populate fields from an asset's current metadata."""
         self.source_file = str(source_path) if source_path else ""
         self.asset_name = asset.name if asset else ""
         
@@ -893,7 +709,6 @@ class QAS_MetadataEditProperties(bpy.types.PropertyGroup):
                 new_tag = self.edit_tags.add()
                 new_tag.name = tag.name
         
-        # Store originals for change detection (tags as comma string)
         self.orig_name = self.edit_name
         self.orig_description = self.edit_description
         self.orig_license = self.edit_license
@@ -913,16 +728,6 @@ classes = (
 
 
 def register():
-    """
-    Register all property classes and add them to WindowManager.
-
-    Registers:
-    - QuickAssetSaverPreferences (addon preferences)
-    - QASSaveProperties (asset save workflow)
-    - QAS_BundlerProperties (asset bundler settings)
-
-    Also attaches property groups to WindowManager for global access.
-    """
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.WindowManager.qas_save_props = bpy.props.PointerProperty(
@@ -940,12 +745,6 @@ def register():
 
 
 def unregister():
-    """
-    Unregister all property classes and clean up WindowManager.
-
-    Removes property groups from WindowManager and unregisters classes
-    in reverse order to ensure proper cleanup.
-    """
     if hasattr(bpy.types.WindowManager, "qas_metadata_edit"):
         del bpy.types.WindowManager.qas_metadata_edit
     if hasattr(bpy.types.WindowManager, "qas_bundler_props"):
