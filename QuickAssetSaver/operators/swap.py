@@ -14,7 +14,7 @@ class QAS_OT_swap_selected_with_asset(Operator):
 
     bl_idname = "qas.swap_selected_with_asset"
     bl_label = "Replace with Asset"
-    bl_description = "Replace selected objects in the scene with the selected asset (Only available for Object and Collection assets)"
+    bl_description = "Replace selected objects in the scene with the selected asset (respects Asset Browser import settings)"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -31,10 +31,12 @@ class QAS_OT_swap_selected_with_asset(Operator):
                 break
         
         if not has_selected:
+            cls.poll_message_set("No objects selected in the scene")
             return False
         
         asset = getattr(context, "asset", None)
         if not asset:
+            cls.poll_message_set("No asset selected in the Asset Browser")
             return False
         
         # Check asset ID type - works for both current file and library assets
@@ -43,7 +45,11 @@ class QAS_OT_swap_selected_with_asset(Operator):
             return False
         
         # Only enable for Object and Collection assets
-        return asset_id_type in {'OBJECT', 'COLLECTION'}
+        if asset_id_type not in {'OBJECT', 'COLLECTION'}:
+            cls.poll_message_set("Only available for Object and Collection assets")
+            return False
+        
+        return True
 
     def _get_import_settings(self, context):
         """Get import settings from Blender's Asset Browser."""
