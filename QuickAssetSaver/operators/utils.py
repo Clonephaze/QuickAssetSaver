@@ -7,7 +7,7 @@ from pathlib import Path
 
 import bpy
 
-DEBUG_MODE = True
+DEBUG_MODE = False
 
 MIN_BLEND_FILE_SIZE = 100
 MAX_INCREMENTAL_FILES = 9999
