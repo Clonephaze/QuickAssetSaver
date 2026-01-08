@@ -1,6 +1,6 @@
 # Quick Asset Saver
 
-Blender add-on that streamlines working with the native Asset Browser: save assets out of the Current File, manage existing assets in libraries, swap scene objects, and bundle assets for sharing.
+Blender add-on that aims to help you Work *with* Blender's Asset Browser, not around it. Quickly save assets from your current file into any user asset library, and manage assets inside libraries with editing, moving, replacing, deleting, and bundling tools.
 
 ## Core Features
 
@@ -14,7 +14,7 @@ Blender add-on that streamlines working with the native Asset Browser: save asse
 	- Works when browsing a user asset library in the Asset Browser
 	- **Edit**: change asset name and tags, and update them inside the `.blend` file
 	- **Move**: move selected assets to another library and/or catalog (including Unassigned)
-		- Respects Blender’s catalog file and updates catalog IDs inside the asset files
+		- Respects Blender's catalog file and updates catalog IDs inside the asset files
 		- Handles name conflicts with Increment / Overwrite / Skip options
 	- **Replace**: swap selected scene objects with the selected asset (append or link)
 	- **Delete**: send selected asset `.blend` files to the system Recycle Bin / Trash (Windows, macOS, Linux) using `send2trash`
@@ -26,7 +26,7 @@ Blender add-on that streamlines working with the native Asset Browser: save asse
 	- Optionally copy the catalog file alongside the bundle
 	- Guardrails for large selections and maximum bundle size to avoid memory issues
 
-All tools build on Blender’s native asset libraries and catalogs – no custom database, no forced folder structure, and no custom file suffixes.
+All tools build on Blender's native asset libraries and catalogs – no custom database, no forced folder structure, and no custom file suffixes.
 
 ## Panels & Workflows
 
@@ -105,4 +105,4 @@ Add-on preferences are under **Edit → Preferences → Add-ons → Quick Asset 
 - At least one asset library configured in **Preferences → File Paths → Asset Libraries**.
 - File access permission (used only for reading library paths, writing asset `.blend` files, and sending deleted assets to the system trash).
 
-Tested on Windows, macOS, and Linux using Blender’s native asset system and cross-platform-safe file handling.
+Tested on Windows, macOS, and Linux using Blender's native asset system and cross-platform-safe file handling.
