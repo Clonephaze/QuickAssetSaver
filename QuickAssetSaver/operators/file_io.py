@@ -8,7 +8,7 @@ from pathlib import Path
 
 import bpy
 
-from .utils import debug_print, MIN_BLEND_FILE_SIZE
+from .utils import debug_print, MIN_BLEND_FILE_SIZE, ASSET_DATABLOCK_COLLECTIONS
 
 
 def collect_external_dependencies(datablock):
@@ -248,16 +248,11 @@ def count_assets_in_blend(blend_path):
     Returns a dict with asset count and list of asset info:
     {'count': int, 'assets': [{'name': str, 'type': str}, ...]}
     """
-    datablock_collections = [
-        'objects', 'materials', 'node_groups', 'worlds', 'collections',
-        'meshes', 'curves', 'armatures', 'actions', 'brushes',
-    ]
-    
     result = {'count': 0, 'assets': []}
     
     try:
         with bpy.data.libraries.load(str(blend_path), link=False, assets_only=True) as (data_from, data_to):
-            for collection_name in datablock_collections:
+            for collection_name in ASSET_DATABLOCK_COLLECTIONS:
                 if hasattr(data_from, collection_name):
                     source = getattr(data_from, collection_name)
                     if source:

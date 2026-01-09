@@ -14,6 +14,10 @@ if "bpy" in locals():
         importlib.reload(save)  # noqa: F821
     if "bundle" in locals():
         importlib.reload(bundle)  # noqa: F821
+    if "move" in locals():
+        importlib.reload(move)  # noqa: F821
+    if "delete" in locals():
+        importlib.reload(delete)  # noqa: F821
     if "manage" in locals():
         importlib.reload(manage)  # noqa: F821
     if "swap" in locals():
@@ -21,7 +25,7 @@ if "bpy" in locals():
     if "metadata" in locals():
         importlib.reload(metadata)  # noqa: F821
 
-from . import utils, catalog, file_io, save, bundle, manage, swap, metadata  # noqa: F401
+from . import utils, catalog, file_io, save, bundle, move, delete, manage, swap, metadata  # noqa: F401
 
 import bpy
 

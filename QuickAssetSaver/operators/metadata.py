@@ -8,7 +8,7 @@ from pathlib import Path
 import bpy
 from bpy.types import Operator
 
-from .utils import debug_print, refresh_asset_browser
+from .utils import debug_print, refresh_asset_browser, ALL_DATABLOCK_COLLECTIONS
 
 
 class QAS_OT_apply_metadata_changes(Operator):
@@ -83,16 +83,17 @@ class QAS_OT_apply_metadata_changes(Operator):
     def _update_asset_metadata(self, blend_path, target_name, new_name=None, 
                                 new_description=None, new_license=None,
                                 new_copyright=None, new_author=None, new_tags=None):
-        """Update metadata for a specific asset in a .blend file."""
-        datablock_collections = [
-            'objects', 'materials', 'node_groups', 'worlds', 'collections',
-            'meshes', 'curves', 'armatures', 'actions', 'brushes', 'scenes',
-        ]
+        """Update metadata for a specific asset in a .blend file.
         
+        Preserves ALL data in the .blend file by importing all datablock types,
+        not just asset-related ones. This ensures non-asset data, custom structures,
+        backup objects, etc. are maintained.
+        """
         try:
+            # Use ALL datablock collections to preserve complete file contents
             names_to_import = {}
             with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
-                for collection_name in datablock_collections:
+                for collection_name in ALL_DATABLOCK_COLLECTIONS:
                     if hasattr(data_from, collection_name):
                         source = getattr(data_from, collection_name)
                         if source:
@@ -111,7 +112,7 @@ class QAS_OT_apply_metadata_changes(Operator):
                             renamed_existing.append((existing_db, original_name))
             
             with bpy.data.libraries.load(str(blend_path), link=False, assets_only=False) as (data_from, data_to):
-                for collection_name in datablock_collections:
+                for collection_name in ALL_DATABLOCK_COLLECTIONS:
                     if hasattr(data_from, collection_name):
                         source = getattr(data_from, collection_name)
                         if source:

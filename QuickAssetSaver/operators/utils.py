@@ -16,6 +16,65 @@ LARGE_SELECTION_WARNING_THRESHOLD = 25
 VERY_LARGE_BUNDLE_WARNING_MB = 5000
 DEFAULT_MAX_BUNDLE_SIZE_MB = 4096
 
+# Complete list of all Blender datablock collection names that can contain user data.
+# Used when loading/writing .blend files to preserve ALL data in the file.
+# Note: Not all of these exist in all Blender versions.
+ALL_DATABLOCK_COLLECTIONS = [
+    'actions',
+    'armatures',
+    'brushes',
+    'cache_files',
+    'cameras',
+    'collections',
+    'curves',
+    'fonts',
+    'grease_pencils',
+    'hair_curves',
+    'images',
+    'lattices',
+    'libraries',
+    'lightprobes',
+    'lights',
+    'linestyles',
+    'masks',
+    'materials',
+    'meshes',
+    'metaballs',
+    'movieclips',
+    'node_groups',
+    'objects',
+    'paint_curves',
+    'palettes',
+    'particles',
+    'pointclouds',
+    'scenes',
+    'screens',
+    'shape_keys',
+    'sounds',
+    'speakers',
+    'texts',
+    'textures',
+    'volumes',
+    'workspaces',
+    'worlds',
+]
+
+# Subset of datablock types that can be marked as assets in the Asset Browser.
+# Used when we only need to find/modify asset datablocks.
+ASSET_DATABLOCK_COLLECTIONS = [
+    'actions',
+    'armatures',
+    'brushes',
+    'collections',
+    'curves',
+    'materials',
+    'meshes',
+    'node_groups',
+    'objects',
+    'scenes',
+    'worlds',
+]
+
 
 def debug_print(*args, **kwargs):
     """Print debug messages only when DEBUG_MODE is enabled."""
