@@ -79,16 +79,18 @@ def build_library_enum_items():
                 try:
                     if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
                         # Get library name - handle potential encoding issues gracefully
+                        # Ensure we properly handle Unicode in all languages (Chinese, Japanese, Korean, etc.)
                         try:
-                            lib_name = lib.name if lib.name else f"Library {idx + 1}"
-                        except (UnicodeDecodeError, UnicodeEncodeError, AttributeError):
+                            lib_name = str(lib.name) if lib.name else f"Library {idx + 1}"
+                        except (UnicodeDecodeError, UnicodeEncodeError, AttributeError, TypeError):
                             lib_name = f"Library {idx + 1}"
                         
                         try:
-                            lib_path = lib.path if lib.path else "<unknown>"
-                        except (UnicodeDecodeError, UnicodeEncodeError, AttributeError):
+                            lib_path = str(lib.path) if lib.path else "<unknown>"
+                        except (UnicodeDecodeError, UnicodeEncodeError, AttributeError, TypeError):
                             lib_path = "<unknown>"
                         
+                        # Display name uses the full Unicode library name
                         display_name = lib_name
                         
                         debug_print(f"[QAS Enum Debug] Adding library {idx}: id=LIB_{idx}, name={display_name}, path={lib_path}")

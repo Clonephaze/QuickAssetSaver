@@ -7,8 +7,6 @@ MAX_PATH_DISPLAY_LENGTH = 40
 LARGE_SELECTION_THRESHOLD = 10
 EXCLUDED_LIBRARY_REFS = ["LOCAL", "CURRENT", "ALL", "ESSENTIALS"]
 
-_original_preview_panel_poll = None
-
 def debug_print(*args, **kwargs):
     if DEBUG_MODE:
         print(*args, **kwargs)
@@ -138,11 +136,8 @@ class QAS_UL_metadata_tags(bpy.types.UIList):
     bl_idname = "QAS_UL_metadata_tags"
     
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        if self.layout_type in {'DEFAULT', 'COMPACT'}:
-            layout.prop(item, "name", text="", emboss=False, icon='NONE')
-        elif self.layout_type == 'GRID':
-            layout.alignment = 'CENTER'
-            layout.label(text=item.name, icon='NONE')
+        # Draw the tag name as an editable property
+        layout.prop(item, "name", text="", emboss=False, icon='NONE')
 
 
 class QAS_OT_tag_add(bpy.types.Operator):
@@ -485,11 +480,6 @@ class QAS_PT_asset_metadata(bpy.types.Panel):
         layout.prop(meta, "edit_author", text="Author")
 
 
-# Store reference to original panels for restoration
-_original_metadata_panel = None
-_original_tags_panel = None
-
-
 class QAS_PT_asset_tags(bpy.types.Panel):
     """Custom tags panel that replaces Blender's ASSETBROWSER_PT_metadata_tags."""
     
@@ -708,6 +698,12 @@ class QAS_PT_save_to_library(bpy.types.Panel):
         row.operator("qas.save_asset_to_library_direct", text="Copy to Asset Library", icon="EXPORT")
 
 
+# Store reference to original poll methods for restoration
+_original_metadata_poll = None
+_original_tags_poll = None
+_original_preview_poll = None
+
+
 classes = (
     QAS_PT_save_hint,
     QAS_PT_bulk_operations,
@@ -723,83 +719,85 @@ classes = (
 
 
 def register():
-    global _original_metadata_panel, _original_tags_panel, _original_preview_panel_poll
+    global _original_metadata_poll, _original_tags_poll, _original_preview_poll
     
     for cls in classes:
         bpy.utils.register_class(cls)
     
     bpy.types.ASSETBROWSER_MT_context_menu.append(draw_asset_context_menu)
     
-    # Replace Blender's metadata panel with our custom one
+    # Hide Blender's native metadata panel by overriding its poll (we have our own editable version)
     try:
         from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata
-        _original_metadata_panel = ASSETBROWSER_PT_metadata
-        bpy.utils.unregister_class(ASSETBROWSER_PT_metadata)
-        debug_print("[QAS] Replaced ASSETBROWSER_PT_metadata with custom panel")
+        _original_metadata_poll = ASSETBROWSER_PT_metadata.poll
+        ASSETBROWSER_PT_metadata.poll = classmethod(lambda cls, ctx: False)
+        debug_print("[QAS] Hid ASSETBROWSER_PT_metadata via poll override")
     except Exception as e:
-        debug_print(f"[QAS] Could not replace metadata panel: {e}")
+        debug_print(f"[QAS] Could not override metadata panel poll: {e}")
     
-    # Replace Blender's tags panel with our custom one
+    # Hide Blender's native tags panel by overriding its poll (we have our own editable version)
     try:
         from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_tags
-        _original_tags_panel = ASSETBROWSER_PT_metadata_tags
-        bpy.utils.unregister_class(ASSETBROWSER_PT_metadata_tags)
-        debug_print("[QAS] Replaced ASSETBROWSER_PT_metadata_tags with custom panel")
+        _original_tags_poll = ASSETBROWSER_PT_metadata_tags.poll
+        ASSETBROWSER_PT_metadata_tags.poll = classmethod(lambda cls, ctx: False)
+        debug_print("[QAS] Hid ASSETBROWSER_PT_metadata_tags via poll override")
     except Exception as e:
-        debug_print(f"[QAS] Could not replace tags panel: {e}")
+        debug_print(f"[QAS] Could not override tags panel poll: {e}")
     
-    # Override preview panel poll to hide when 2+ assets selected
+    # Override preview panel poll to hide when 2+ assets selected (bulk ops mode)
     try:
         from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_preview
-        _original_preview_panel_poll = ASSETBROWSER_PT_metadata_preview.poll
+        _original_preview_poll = ASSETBROWSER_PT_metadata_preview.poll
         
         @classmethod
-        def custom_preview_poll(cls, context):
+        def _preview_poll_override(cls, context):
             # Hide when 2+ assets selected (bulk ops mode)
             selected_count = _count_selected_assets(context)
             if selected_count >= 2:
                 return False
             # Otherwise use original poll logic
-            return _original_preview_panel_poll(context)
+            return _original_preview_poll.__func__(cls, context)
         
-        ASSETBROWSER_PT_metadata_preview.poll = custom_preview_poll
-        debug_print("[QAS] Overrode ASSETBROWSER_PT_metadata_preview poll method")
+        ASSETBROWSER_PT_metadata_preview.poll = _preview_poll_override
+        debug_print("[QAS] Overrode ASSETBROWSER_PT_metadata_preview poll for bulk ops")
     except Exception as e:
         debug_print(f"[QAS] Could not override preview panel poll: {e}")
 
 
 def unregister():
-    global _original_metadata_panel, _original_tags_panel, _original_preview_panel_poll
+    global _original_metadata_poll, _original_tags_poll, _original_preview_poll
     
     bpy.types.ASSETBROWSER_MT_context_menu.remove(draw_asset_context_menu)
     
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     
-    # Restore Blender's original metadata panel
-    if _original_metadata_panel:
+    # Restore Blender's original metadata panel poll
+    if _original_metadata_poll:
         try:
-            bpy.utils.register_class(_original_metadata_panel)
-            debug_print("[QAS] Restored original ASSETBROWSER_PT_metadata panel")
+            from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata
+            ASSETBROWSER_PT_metadata.poll = _original_metadata_poll
+            debug_print("[QAS] Restored original ASSETBROWSER_PT_metadata poll")
         except Exception as e:
-            debug_print(f"[QAS] Could not restore metadata panel: {e}")
-        _original_metadata_panel = None
+            debug_print(f"[QAS] Could not restore metadata panel poll: {e}")
+        _original_metadata_poll = None
     
-    # Restore Blender's original tags panel
-    if _original_tags_panel:
+    # Restore Blender's original tags panel poll
+    if _original_tags_poll:
         try:
-            bpy.utils.register_class(_original_tags_panel)
-            debug_print("[QAS] Restored original ASSETBROWSER_PT_metadata_tags panel")
+            from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_tags
+            ASSETBROWSER_PT_metadata_tags.poll = _original_tags_poll
+            debug_print("[QAS] Restored original ASSETBROWSER_PT_metadata_tags poll")
         except Exception as e:
-            debug_print(f"[QAS] Could not restore tags panel: {e}")
-        _original_tags_panel = None
+            debug_print(f"[QAS] Could not restore tags panel poll: {e}")
+        _original_tags_poll = None
     
-    # Restore preview panel poll method
-    if _original_preview_panel_poll:
+    # Restore Blender's original preview panel poll
+    if _original_preview_poll:
         try:
             from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_preview
-            ASSETBROWSER_PT_metadata_preview.poll = _original_preview_panel_poll
+            ASSETBROWSER_PT_metadata_preview.poll = _original_preview_poll
             debug_print("[QAS] Restored original ASSETBROWSER_PT_metadata_preview poll")
         except Exception as e:
             debug_print(f"[QAS] Could not restore preview panel poll: {e}")
-        _original_preview_panel_poll = None
+        _original_preview_poll = None
