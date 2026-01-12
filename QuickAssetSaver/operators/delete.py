@@ -53,6 +53,9 @@ def _should_cleanup_empty_folder(folder_path):
     """Check if a folder is empty or only contains hidden/system files.
     
     Returns True if the folder should be sent to recycle bin.
+    
+    CRITICAL: NEVER returns True for folders containing blender_assets.cats.txt
+    or any library root folder. This protects catalog definitions.
     """
     from pathlib import Path
     folder_path = Path(folder_path)
@@ -61,6 +64,12 @@ def _should_cleanup_empty_folder(folder_path):
         return False
     
     try:
+        # NEVER cleanup folders containing catalog files - these are library roots!
+        catalog_file = folder_path / "blender_assets.cats.txt"
+        if catalog_file.exists():
+            debug_print(f"PROTECTED: {folder_path} contains catalog file, will not cleanup")
+            return False
+        
         # Get all contents
         contents = list(folder_path.iterdir())
         
@@ -125,10 +134,11 @@ def _trash_companions_for_file(blend_path):
     if asset_folder.exists() and asset_folder.is_dir():
         items_to_trash.append(asset_folder)
     
-    # Collect metadata files
+    # Collect metadata files - but NEVER touch catalog files!
+    protected_files = {'blender_assets.cats.txt'}
     for ext in METADATA_EXTENSIONS:
         for f in parent.glob(f"*{ext}"):
-            if f.is_file() and f not in items_to_trash:
+            if f.is_file() and f not in items_to_trash and f.name not in protected_files:
                 items_to_trash.append(f)
     
     trashed_count = 0

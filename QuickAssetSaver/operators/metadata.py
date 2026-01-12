@@ -9,6 +9,7 @@ import bpy
 from bpy.types import Operator
 
 from .utils import debug_print, refresh_asset_browser, ALL_DATABLOCK_COLLECTIONS
+from .move import THUMBNAIL_EXTENSIONS
 
 
 class QAS_OT_apply_metadata_changes(Operator):
@@ -189,9 +190,34 @@ class QAS_OT_apply_metadata_changes(Operator):
                     pass
             
             if temp_path.exists():
+                # Handle file rename if asset name changed
+                final_path = blend_path
+                if new_name and new_name != target_name:
+                    # Rename .blend file to match new asset name
+                    new_blend_name = f"{new_name}.blend"
+                    final_path = blend_path.parent / new_blend_name
+                    
+                    # If target already exists, add increment
+                    if final_path.exists() and final_path != blend_path:
+                        counter = 1
+                        while final_path.exists():
+                            new_blend_name = f"{new_name}.{counter:03d}.blend"
+                            final_path = blend_path.parent / new_blend_name
+                            counter += 1
+                    
+                    debug_print(f"Renaming file: {blend_path.name} -> {final_path.name}")
+                
+                # Remove old file and move temp to final location
                 if blend_path.exists():
                     blend_path.unlink()
-                shutil.move(str(temp_path), str(blend_path))
+                shutil.move(str(temp_path), str(final_path))
+                
+                # Rename companion files if asset name changed
+                if new_name and new_name != target_name and final_path != blend_path:
+                    self._rename_companion_files(blend_path, target_name, new_name)
+                
+                # Update blend_path reference for preview restoration
+                blend_path = final_path
                 
                 if preview_data:
                     try:
@@ -232,30 +258,76 @@ class QAS_OT_apply_metadata_changes(Operator):
         
         return False
     
+    def _rename_companion_files(self, old_blend_path, old_stem, new_stem):
+        """Rename companion files when asset is renamed.
+        
+        Args:
+            old_blend_path: Original .blend file path
+            old_stem: Original asset name (file stem)
+            new_stem: New asset name
+        """
+        parent = old_blend_path.parent
+        
+        # Rename asset-named thumbnails (old_stem.png -> new_stem.png)
+        for ext in THUMBNAIL_EXTENSIONS:
+            old_thumb = parent / f"{old_stem}{ext}"
+            if old_thumb.exists():
+                new_thumb = parent / f"{new_stem}{ext}"
+                # Avoid collision - add .001 if target exists
+                if new_thumb.exists():
+                    counter = 1
+                    while new_thumb.exists():
+                        new_thumb = parent / f"{new_stem}.{counter:03d}{ext}"
+                        counter += 1
+                try:
+                    old_thumb.rename(new_thumb)
+                    debug_print(f"Renamed thumbnail: {old_thumb.name} -> {new_thumb.name}")
+                except Exception as e:
+                    debug_print(f"Could not rename thumbnail {old_thumb}: {e}")
+        
+        # Rename asset-named subfolder (old_stem/ -> new_stem/)
+        old_folder = parent / old_stem
+        if old_folder.exists() and old_folder.is_dir():
+            new_folder = parent / new_stem
+            # Avoid collision
+            if new_folder.exists():
+                counter = 1
+                while new_folder.exists():
+                    new_folder = parent / f"{new_stem}.{counter:03d}"
+                    counter += 1
+            try:
+                old_folder.rename(new_folder)
+                debug_print(f"Renamed asset folder: {old_folder.name} -> {new_folder.name}")
+            except Exception as e:
+                debug_print(f"Could not rename asset folder {old_folder}: {e}")
+    
     def _remove_datablock(self, datablock):
-        """Remove a datablock from the current session."""
+        """Remove a datablock from the current session.
+        
+        Handles all common datablock types to prevent them from staying
+        in the user's current file after metadata operations.
+        """
         try:
-            if isinstance(datablock, bpy.types.Object):
-                bpy.data.objects.remove(datablock)
-            elif isinstance(datablock, bpy.types.Material):
-                bpy.data.materials.remove(datablock)
-            elif isinstance(datablock, bpy.types.NodeTree):
-                bpy.data.node_groups.remove(datablock)
-            elif isinstance(datablock, bpy.types.World):
-                bpy.data.worlds.remove(datablock)
-            elif isinstance(datablock, bpy.types.Collection):
-                bpy.data.collections.remove(datablock)
-            elif isinstance(datablock, bpy.types.Mesh):
-                bpy.data.meshes.remove(datablock)
-            elif isinstance(datablock, bpy.types.Curve):
-                bpy.data.curves.remove(datablock)
-            elif isinstance(datablock, bpy.types.Armature):
-                bpy.data.armatures.remove(datablock)
-            elif isinstance(datablock, bpy.types.Action):
-                bpy.data.actions.remove(datablock)
-            elif isinstance(datablock, bpy.types.Brush):
-                bpy.data.brushes.remove(datablock)
+            # Get the collection this datablock belongs to
+            for collection_name in dir(bpy.data):
+                if collection_name.startswith('_'):
+                    continue
+                collection = getattr(bpy.data, collection_name, None)
+                if collection is None:
+                    continue
+                if not hasattr(collection, 'remove'):
+                    continue
+                
+                # Check if this datablock is in this collection
+                try:
+                    if datablock in collection.values():
+                        collection.remove(datablock)
+                        return
+                except (TypeError, AttributeError, RuntimeError):
+                    # Some collections don't support 'in' or removal
+                    continue
         except (RuntimeError, ReferenceError):
+            # Datablock already removed or invalid
             pass
 
 

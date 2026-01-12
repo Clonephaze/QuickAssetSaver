@@ -36,11 +36,20 @@ def _should_cleanup_empty_folder(folder_path):
     """Check if a folder is empty or only contains hidden/system files.
     
     Returns True if the folder should be sent to recycle bin.
+    
+    CRITICAL: NEVER returns True for folders containing blender_assets.cats.txt
+    or any library root folder. This protects catalog definitions.
     """
     if not folder_path.exists() or not folder_path.is_dir():
         return False
     
     try:
+        # NEVER cleanup folders containing catalog files - these are library roots!
+        catalog_file = folder_path / "blender_assets.cats.txt"
+        if catalog_file.exists():
+            debug_print(f"PROTECTED: {folder_path} contains catalog file, will not cleanup")
+            return False
+        
         # Get all contents
         contents = list(folder_path.iterdir())
         
@@ -268,9 +277,15 @@ class QAS_OT_move_selected_to_library(Operator):
         
         Returns True if there are textures, thumbnails, metadata files, etc.
         that should be moved along with the .blend file.
+        
+        Only detects files/folders that are SPECIFIC to this asset, not general
+        library files like blender_assets.cats.txt.
         """
         stem = src_path.stem
         parent = src_path.parent
+        
+        # Files that are NEVER companions - they belong to the library
+        protected_files = {'blender_assets.cats.txt'}
         
         # Check for thumbnails
         for ext in THUMBNAIL_EXTENSIONS:
@@ -279,20 +294,23 @@ class QAS_OT_move_selected_to_library(Operator):
             if (parent / f"thumbnail{ext}").exists():
                 return True
         
-        # Check for common asset companion folders
-        for folder_name in COMPANION_FOLDER_NAMES:
-            if (parent / folder_name).exists() and (parent / folder_name).is_dir():
-                return True
-        
-        # Check for asset-named subfolder
+        # Check for asset-named subfolder (e.g., asset_name/ folder for an asset_name.blend)
         if (parent / stem).is_dir():
             return True
         
-        # Check for metadata files
+        # Check for asset-specific metadata files (must contain asset name)
         for ext in METADATA_EXTENSIONS:
-            for f in parent.glob(f"*{ext}"):
-                if f.is_file():
+            # Check for exact stem match (e.g., asset_name.json)
+            if (parent / f"{stem}{ext}").exists():
+                return True
+            # Check for stem-prefixed files (e.g., asset_name_info.json)
+            for f in parent.glob(f"{stem}*{ext}"):
+                if f.is_file() and f.name not in protected_files:
                     return True
+        
+        # NOTE: We intentionally do NOT check for generic companion folders like
+        # textures/, materials/, etc. at the parent level because those could be
+        # catalog folders, not asset companions. Only asset-named subfolders count.
         
         return False
 
@@ -338,8 +356,9 @@ class QAS_OT_move_selected_to_library(Operator):
             if has_companions:
                 self._copy_companion_files(src_path, actual_dest)
             
-            # Update catalog if specified - this rewrites the file but preserves all datablocks
-            if catalog_uuid and catalog_uuid != "UNASSIGNED":
+            # Update catalog - this rewrites the file but preserves all datablocks
+            # catalog_uuid can be empty string for "Unassigned"
+            if catalog_uuid is not None:
                 try:
                     success = self._update_catalog_in_blend(
                         actual_dest, 
@@ -395,19 +414,24 @@ class QAS_OT_move_selected_to_library(Operator):
     # -------------------------------------------------------------------------
     
     def _copy_companion_files(self, src_path, dest_path):
-        """Copy ALL companion files and folders alongside the blend file.
+        """Copy companion files and folders alongside the blend file.
         
-        Copies:
+        Only copies files that are SPECIFIC to this asset:
         - Thumbnails: {stem}.png, thumbnail.webp, etc.
-        - Common asset folders: textures/, maps/, materials/, shaders/, images/, 
-          hdri/, references/, documentation/, resources/
         - Asset-named subfolders: {stem}/
-        - Metadata files: *.json, *.txt, *.md, *.xml
+        - Asset-specific metadata: {stem}.json, {stem}_info.txt, etc.
+        
+        Does NOT copy:
+        - Library files (blender_assets.cats.txt)
+        - Generic folders that might be catalog paths (textures/, materials/, etc.)
         """
         src_stem = src_path.stem
         dest_stem = dest_path.stem
         src_parent = src_path.parent
         dest_parent = dest_path.parent
+        
+        # Files that should NEVER be copied
+        protected_files = {'blender_assets.cats.txt'}
         
         # Copy thumbnails - both stem-named and generic "thumbnail" named
         for ext in THUMBNAIL_EXTENSIONS:
@@ -431,19 +455,6 @@ class QAS_OT_move_selected_to_library(Operator):
                 except Exception as e:
                     debug_print(f"Warning: Could not copy thumbnail {src_thumbnail.name}: {e}")
         
-        # Copy common asset companion folders (case-insensitive, copy first match of each type)
-        for folder_group in COMPANION_FOLDER_GROUPS:
-            for folder_name in folder_group:
-                src_folder = src_parent / folder_name
-                if src_folder.exists() and src_folder.is_dir():
-                    dest_folder = dest_parent / folder_name
-                    try:
-                        shutil.copytree(str(src_folder), str(dest_folder))
-                        debug_print(f"Copied folder: {folder_name}/")
-                    except Exception as e:
-                        debug_print(f"Warning: Could not copy folder {folder_name}/: {e}")
-                    break  # Only copy one folder per group
-        
         # Copy asset-named subfolder if it exists (e.g., brick_floor_003/)
         src_asset_folder = src_parent / src_stem
         if src_asset_folder.exists() and src_asset_folder.is_dir():
@@ -454,11 +465,24 @@ class QAS_OT_move_selected_to_library(Operator):
             except Exception as e:
                 debug_print(f"Warning: Could not copy asset folder {src_stem}/: {e}")
         
-        # Copy metadata files (json, txt, md, xml)
+        # Copy asset-specific metadata files (must match asset name)
         for ext in METADATA_EXTENSIONS:
-            for src_file in src_parent.glob(f"*{ext}"):
-                if src_file.is_file():
-                    dest_file = dest_parent / src_file.name
+            # Exact match (e.g., asset_name.json)
+            src_file = src_parent / f"{src_stem}{ext}"
+            if src_file.exists() and src_file.is_file():
+                dest_file = dest_parent / f"{dest_stem}{ext}"
+                try:
+                    shutil.copy2(str(src_file), str(dest_file))
+                    debug_print(f"Copied metadata: {src_file.name}")
+                except Exception as e:
+                    debug_print(f"Warning: Could not copy {src_file.name}: {e}")
+            
+            # Prefixed files (e.g., asset_name_info.json) - but not catalog files
+            for src_file in src_parent.glob(f"{src_stem}_*{ext}"):
+                if src_file.is_file() and src_file.name not in protected_files:
+                    # Preserve the suffix part of the filename
+                    suffix = src_file.name[len(src_stem):]
+                    dest_file = dest_parent / f"{dest_stem}{suffix}"
                     try:
                         shutil.copy2(str(src_file), str(dest_file))
                         debug_print(f"Copied metadata: {src_file.name}")
@@ -507,10 +531,11 @@ class QAS_OT_move_selected_to_library(Operator):
         if asset_folder.exists() and asset_folder.is_dir():
             items_to_trash.append(asset_folder)
         
-        # Collect metadata files
+        # Collect metadata files - but NEVER touch catalog files!
+        protected_files = {'blender_assets.cats.txt'}
         for ext in METADATA_EXTENSIONS:
             for f in parent.glob(f"*{ext}"):
-                if f.is_file() and f not in items_to_trash:
+                if f.is_file() and f not in items_to_trash and f.name not in protected_files:
                     items_to_trash.append(f)
         
         for item in items_to_trash:
@@ -581,7 +606,10 @@ class QAS_OT_move_selected_to_library(Operator):
                         pass
                 return False
             
-            if catalog_uuid:
+            # Set catalog - use null UUID for Unassigned
+            if catalog_uuid == "" or catalog_uuid is None:
+                target_db.asset_data.catalog_id = "00000000-0000-0000-0000-000000000000"
+            elif catalog_uuid:
                 target_db.asset_data.catalog_id = catalog_uuid
             
             success = write_blend_file(str(dest_path), {target_db})
@@ -734,7 +762,12 @@ class QAS_OT_move_selected_to_library(Operator):
                             # Only update catalog on asset datablocks
                             if hasattr(db, 'asset_data') and db.asset_data:
                                 if target_names is None or name in target_names:
-                                    db.asset_data.catalog_id = catalog_uuid
+                                    # Use null UUID for Unassigned, otherwise use the provided UUID
+                                    # Blender uses "00000000-0000-0000-0000-000000000000" for unassigned
+                                    if catalog_uuid == "" or catalog_uuid is None:
+                                        db.asset_data.catalog_id = "00000000-0000-0000-0000-000000000000"
+                                    else:
+                                        db.asset_data.catalog_id = catalog_uuid
             
             if not imported_datablocks:
                 for existing_db, original_name in renamed_existing:
