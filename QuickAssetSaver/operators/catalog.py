@@ -90,7 +90,9 @@ def get_catalogs_from_cdf(library_path):
                     uuid.UUID(catalog_uuid)
                     catalogs[catalog_path] = catalog_uuid
                     
-                    display_name = catalog_path
+                    # Ensure catalog path (which may contain Unicode characters) is properly handled
+                    # This supports Chinese, Japanese, Korean and other non-ASCII catalog names
+                    display_name = str(catalog_path)
                     
                     debug_print(f"[QAS Catalog Debug] Adding catalog {idx}: uuid={catalog_uuid}, name={display_name}")
                     
