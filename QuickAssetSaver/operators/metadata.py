@@ -363,7 +363,6 @@ class QAS_OT_toggle_edit_mode(Operator):
         else:
             # Enter edit mode
             panels._enter_edit_mode(context)
-            self.report({'INFO'}, "Entered edit mode - native panels temporarily overridden")
         
         return {'FINISHED'}
 
