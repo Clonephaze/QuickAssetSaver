@@ -331,6 +331,44 @@ class QAS_OT_apply_metadata_changes(Operator):
             pass
 
 
+class QAS_OT_toggle_edit_mode(Operator):
+    """Toggle edit mode for asset metadata and tags"""
+    bl_idname = "qas.toggle_edit_mode"
+    bl_label = "Edit Metadata/Tags"
+    bl_description = "Enable editing of metadata and tags (temporarily overrides native panels)"
+    
+    @classmethod
+    def poll(cls, context):
+        # Only available for external assets
+        asset = getattr(context, "asset", None)
+        if not asset:
+            return False
+        return not bool(asset.local_id)
+    
+    def execute(self, context):
+        # Import here to avoid circular dependency
+        from .. import panels
+        
+        if panels._edit_mode_active:
+            # Exit edit mode and apply changes
+            wm = context.window_manager
+            meta = getattr(wm, "qas_metadata_edit", None)
+            
+            if meta and meta.has_changes():
+                # Apply changes
+                bpy.ops.qas.apply_metadata_changes()
+            
+            panels._exit_edit_mode()
+            self.report({'INFO'}, "Exited edit mode")
+        else:
+            # Enter edit mode
+            panels._enter_edit_mode(context)
+            self.report({'INFO'}, "Entered edit mode - native panels temporarily overridden")
+        
+        return {'FINISHED'}
+
+
 classes = (
     QAS_OT_apply_metadata_changes,
+    QAS_OT_toggle_edit_mode,
 )

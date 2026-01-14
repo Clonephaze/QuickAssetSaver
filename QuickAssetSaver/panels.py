@@ -348,220 +348,6 @@ def _get_asset_source_path(context):
     return None
 
 
-class QAS_PT_asset_metadata(bpy.types.Panel):
-    """Replacement for Blender's asset metadata panel with editable fields."""
-    
-    bl_space_type = 'FILE_BROWSER'
-    bl_region_type = 'TOOL_PROPS'
-    bl_label = "Asset Metadata"
-    bl_options = {'HIDE_HEADER'}
-    
-    @classmethod
-    def poll(cls, context):
-        # Same poll as original - needs to be in asset browser
-        space = context.space_data
-        if not space or space.type != "FILE_BROWSER":
-            return False
-        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
-            return False
-        
-        # Hide when 2+ assets selected (bulk ops panel takes over)
-        selected_count = _count_selected_assets(context)
-        if selected_count >= 2:
-            return False
-        
-        return True
-    
-    def draw(self, context):
-        layout = self.layout
-        
-        asset = getattr(context, "asset", None)
-        if not asset:
-            layout.label(text="No asset selected")
-            return
-        
-        # Check if this is a local asset (editable natively by Blender)
-        is_local = bool(asset.local_id)
-        
-        if is_local:
-            # For local assets, draw native fields like Blender does
-            self._draw_local_asset(layout, context, asset)
-        else:
-            # For external assets, draw our editable fields
-            self._draw_external_asset(layout, context, asset)
-    
-    def _draw_local_asset(self, layout, context, asset):
-        """Draw editable fields for local assets (Current File) using our own properties."""
-        wm = context.window_manager
-        props = getattr(wm, "qas_save_props", None)
-        
-        if not props:
-            layout.label(text="Properties unavailable")
-            return
-        
-        # Sync props with current asset when asset changes
-        asset_name = asset.name
-        if props.last_asset_name != asset_name:
-            # New asset selected - initialize props from preferences
-            props.last_asset_name = asset_name
-            props.asset_display_name = asset_name
-            # Manually populate asset_file_name since update callback doesn't fire on direct assignment
-            from .operators import sanitize_name
-            props.asset_file_name = sanitize_name(asset_name)
-            
-            from .properties import get_addon_preferences
-            prefs = get_addon_preferences(context)
-            if prefs:
-                props.asset_author = prefs.default_author
-                props.asset_description = prefs.default_description
-                props.asset_license = prefs.default_license
-                props.asset_copyright = prefs.default_copyright
-        
-        # Add top padding
-        layout.separator(factor=0.5)
-        
-        # Name (editable)
-        layout.prop(props, "asset_display_name", text="Name")
-        
-        # Source path (greyed out, non-editable)
-        col = layout.column(align=True)
-        col.enabled = False
-        col.label(text="Source")
-        col.label(text="Current File", icon='NONE')
-        
-        # Metadata fields (using our properties)
-        layout.prop(props, "asset_description", text="Description")
-        layout.prop(props, "asset_license", text="License")
-        layout.prop(props, "asset_copyright", text="Copyright")
-        layout.prop(props, "asset_author", text="Author")
-    
-    def _draw_external_asset(self, layout, context, asset):
-        """Draw editable fields for external assets (user libraries)."""
-        wm = context.window_manager
-        meta = getattr(wm, "qas_metadata_edit", None)
-        
-        if not meta:
-            layout.label(text="Metadata editing unavailable")
-            return
-        
-        source_path = _get_asset_source_path(context)
-        
-        # Check if we need to sync (different asset selected)
-        current_key = f"{source_path}:{asset.name}" if source_path else asset.name
-        stored_key = f"{meta.source_file}:{meta.asset_name}"
-        
-        if current_key != stored_key:
-            # New asset selected, sync the fields
-            meta.sync_from_asset(asset, source_path)
-        
-        # Add top padding
-        layout.separator(factor=0.5)
-        
-        # Editable name field
-        layout.prop(meta, "edit_name", text="Name")
-        
-        # Source path (greyed out, read-only display)
-        col = layout.column(align=True)
-        col.enabled = False
-        col.label(text="Source")
-        if source_path:
-            # Show truncated path
-            path_str = str(source_path)
-            if len(path_str) > 40:
-                path_str = "..." + path_str[-37:]
-            col.label(text=path_str, icon='NONE')
-        else:
-            col.label(text="Unknown", icon='NONE')
-        
-        # Editable metadata fields
-        layout.prop(meta, "edit_description", text="Description")
-        layout.prop(meta, "edit_license", text="License")
-        layout.prop(meta, "edit_copyright", text="Copyright")
-        layout.prop(meta, "edit_author", text="Author")
-
-
-class QAS_PT_asset_tags(bpy.types.Panel):
-    """Custom tags panel that replaces Blender's ASSETBROWSER_PT_metadata_tags."""
-    
-    bl_space_type = 'FILE_BROWSER'
-    bl_region_type = 'TOOL_PROPS'
-    bl_label = "Tags"
-    bl_order = 50  # After Preview (which is around 40)
-    
-    @classmethod
-    def poll(cls, context):
-        # Only show in Asset Browser with an active asset
-        space = context.space_data
-        if not space or space.type != "FILE_BROWSER":
-            return False
-        if not hasattr(space, "browse_mode") or space.browse_mode != "ASSETS":
-            return False
-        
-        # Hide when 2+ assets selected (bulk ops panel takes over)
-        selected_count = _count_selected_assets(context)
-        if selected_count >= 2:
-            return False
-        
-        asset = getattr(context, "asset", None)
-        return asset is not None
-    
-    def draw(self, context):
-        layout = self.layout
-        asset = getattr(context, "asset", None)
-        
-        if not asset:
-            return
-        
-        is_local = bool(asset.local_id)
-        
-        if is_local:
-            # For local assets, show Blender's native tag editor
-            metadata = asset.local_id.asset_data
-            if metadata:
-                row = layout.row()
-                row.template_list(
-                    "ASSETBROWSER_UL_metadata_tags", "asset_tags",
-                    metadata, "tags",
-                    metadata, "active_tag",
-                    rows=3,
-                )
-                col = row.column(align=True)
-                col.operator("asset.tag_add", icon='ADD', text="")
-                col.operator("asset.tag_remove", icon='REMOVE', text="")
-                
-                layout.separator(factor=0.3)
-        else:
-            # For external assets, show our custom editable tag list
-            wm = context.window_manager
-            meta = getattr(wm, "qas_metadata_edit", None)
-            
-            if not meta:
-                layout.label(text="Tags unavailable")
-                return
-            
-            # Ensure we're synced with the current asset
-            source_path = _get_asset_source_path(context)
-            current_key = f"{source_path}:{asset.name}" if source_path else asset.name
-            stored_key = f"{meta.source_file}:{meta.asset_name}"
-            
-            if current_key != stored_key:
-                meta.sync_from_asset(asset, source_path)
-            
-            row = layout.row()
-            row.template_list(
-                "QAS_UL_metadata_tags", "",
-                meta, "edit_tags",
-                meta, "active_tag_index",
-                rows=3,
-            )
-            col = row.column(align=True)
-            col.operator("qas.tag_add", icon='ADD', text="")
-            col.operator("qas.tag_remove", icon='REMOVE', text="")
-            
-            # Small gap before filtering options
-            layout.separator(factor=0.3)
-
-
 class QAS_PT_asset_actions(bpy.types.Panel):
     """Panel for asset actions - Apply Changes and Remove Asset for external assets."""
     
@@ -601,14 +387,20 @@ class QAS_PT_asset_actions(bpy.types.Panel):
         meta = getattr(wm, "qas_metadata_edit", None)
         manage = getattr(wm, "qas_manage_props", None)
         
-        # Check if there are changes
-        has_changes = meta.has_changes() if meta else False
+        # Check if asset changed (auto-exit edit mode)
+        _check_and_exit_edit_mode(context)
         
-        # Apply Changes button (greyed out if no changes)
+        # Edit mode toggle button
         row = layout.row()
-        row.scale_y = 1.2
-        row.enabled = has_changes
-        row.operator("qas.apply_metadata_changes", text="Apply Changes", icon="CHECKMARK")
+        row.scale_y = 1.3
+        if _edit_mode_active:
+            # In edit mode - show "Apply Changes" button
+            has_changes = meta.has_changes() if meta else False
+            row.enabled = has_changes
+            row.operator("qas.toggle_edit_mode", text="Apply Changes", icon="CHECKMARK", depress=True)
+        else:
+            # Not in edit mode - show "Edit Metadata/Tags" button
+            row.operator("qas.toggle_edit_mode", text="Edit Metadata/Tags", icon="GREASEPENCIL")
         
         # Move section
         layout.separator()
@@ -698,10 +490,277 @@ class QAS_PT_save_to_library(bpy.types.Panel):
         row.operator("qas.save_asset_to_library_direct", text="Copy to Asset Library", icon="EXPORT")
 
 
-# Store reference to original poll methods for restoration
+# ============================================================================
+# DRAW OVERRIDE FUNCTIONS (for native Blender panels)
+# ============================================================================
+
+def _draw_metadata_override(self, context):
+    """Override for ASSETBROWSER_PT_metadata.draw() to show editable fields."""
+    layout = self.layout
+    
+    asset = getattr(context, "asset", None)
+    if not asset:
+        layout.label(text="No asset selected")
+        return
+    
+    # Check if this is a local asset
+    is_local = bool(asset.local_id)
+    
+    if is_local:
+        # For local assets, draw our editable fields for saving
+        wm = context.window_manager
+        props = getattr(wm, "qas_save_props", None)
+        
+        if not props:
+            layout.label(text="Properties unavailable")
+            return
+        
+        # Sync props with current asset when asset changes
+        asset_name = asset.name
+        if props.last_asset_name != asset_name:
+            props.last_asset_name = asset_name
+            props.asset_display_name = asset_name
+            from .operators import sanitize_name
+            props.asset_file_name = sanitize_name(asset_name)
+            
+            from .properties import get_addon_preferences
+            prefs = get_addon_preferences(context)
+            if prefs:
+                props.asset_author = prefs.default_author
+                props.asset_description = prefs.default_description
+                props.asset_license = prefs.default_license
+                props.asset_copyright = prefs.default_copyright
+        
+        # Add top padding
+        layout.separator(factor=0.5)
+        
+        # Name (editable)
+        layout.prop(props, "asset_display_name", text="Name")
+        
+        # Source path (greyed out, non-editable)
+        col = layout.column(align=True)
+        col.enabled = False
+        col.label(text="Source")
+        col.label(text="Current File", icon='NONE')
+        
+        # Metadata fields (using our properties)
+        layout.prop(props, "asset_description", text="Description")
+        layout.prop(props, "asset_license", text="License")
+        layout.prop(props, "asset_copyright", text="Copyright")
+        layout.prop(props, "asset_author", text="Author")
+    else:
+        # For external assets, draw our editable fields
+        wm = context.window_manager
+        meta = getattr(wm, "qas_metadata_edit", None)
+        
+        if not meta:
+            layout.label(text="Metadata editing unavailable")
+            return
+        
+        source_path = _get_asset_source_path(context)
+        
+        # Check if we need to sync (different asset selected)
+        current_key = f"{source_path}:{asset.name}" if source_path else asset.name
+        stored_key = f"{meta.source_file}:{meta.asset_name}"
+        
+        if current_key != stored_key:
+            meta.sync_from_asset(asset, source_path)
+        
+        # Add top padding
+        layout.separator(factor=0.5)
+        
+        # Editable name field
+        layout.prop(meta, "edit_name", text="Name")
+        
+        # Source path (greyed out, read-only display)
+        col = layout.column(align=True)
+        col.enabled = False
+        col.label(text="Source")
+        if source_path:
+            path_str = str(source_path)
+            if len(path_str) > 40:
+                path_str = "..." + path_str[-37:]
+            col.label(text=path_str, icon='NONE')
+        else:
+            col.label(text="Unknown", icon='NONE')
+        
+        # Editable metadata fields
+        layout.prop(meta, "edit_description", text="Description")
+        layout.prop(meta, "edit_license", text="License")
+        layout.prop(meta, "edit_copyright", text="Copyright")
+        layout.prop(meta, "edit_author", text="Author")
+
+
+def _draw_tags_override(self, context):
+    """Override for ASSETBROWSER_PT_metadata_tags.draw() to show editable tags."""
+    layout = self.layout
+    asset = getattr(context, "asset", None)
+    
+    if not asset:
+        return
+    
+    is_local = bool(asset.local_id)
+    
+    if is_local:
+        # For local assets, show Blender's native tag editor
+        metadata = asset.local_id.asset_data
+        if metadata:
+            row = layout.row()
+            row.template_list(
+                "ASSETBROWSER_UL_metadata_tags", "asset_tags",
+                metadata, "tags",
+                metadata, "active_tag",
+                rows=3,
+            )
+            col = row.column(align=True)
+            col.operator("asset.tag_add", icon='ADD', text="")
+            col.operator("asset.tag_remove", icon='REMOVE', text="")
+            
+            layout.separator(factor=0.3)
+    else:
+        # For external assets, show our custom editable tag list
+        wm = context.window_manager
+        meta = getattr(wm, "qas_metadata_edit", None)
+        
+        if not meta:
+            layout.label(text="Tags unavailable")
+            return
+        
+        # Ensure we're synced with the current asset
+        source_path = _get_asset_source_path(context)
+        current_key = f"{source_path}:{asset.name}" if source_path else asset.name
+        stored_key = f"{meta.source_file}:{meta.asset_name}"
+        
+        if current_key != stored_key:
+            meta.sync_from_asset(asset, source_path)
+        
+        row = layout.row()
+        row.template_list(
+            "QAS_UL_metadata_tags", "",
+            meta, "edit_tags",
+            meta, "active_tag_index",
+            rows=3,
+        )
+        col = row.column(align=True)
+        col.operator("qas.tag_add", icon='ADD', text="")
+        col.operator("qas.tag_remove", icon='REMOVE', text="")
+        
+        # Small gap before filtering options
+        layout.separator(factor=0.3)
+
+
+# Store reference to original methods for restoration
 _original_metadata_poll = None
+_original_metadata_draw = None
 _original_tags_poll = None
+_original_tags_draw = None
 _original_preview_poll = None
+_edit_mode_active = False
+_edit_mode_asset_key = ""
+
+
+def _enter_edit_mode(context):
+    """Enter edit mode - override native panel draws with editable versions."""
+    global _original_metadata_draw, _original_tags_draw, _edit_mode_active, _edit_mode_asset_key
+    
+    if _edit_mode_active:
+        return  # Already in edit mode
+    
+    # Store current asset key
+    asset = getattr(context, "asset", None)
+    if asset:
+        source_path = _get_asset_source_path(context)
+        _edit_mode_asset_key = f"{source_path}:{asset.name}" if source_path else asset.name
+    
+    # Override native metadata panel draw
+    try:
+        from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata
+        if not _original_metadata_draw:
+            _original_metadata_draw = ASSETBROWSER_PT_metadata.draw
+        ASSETBROWSER_PT_metadata.draw = _draw_metadata_override
+        debug_print("[QAS] Entered edit mode - overrode metadata panel draw")
+    except Exception as e:
+        debug_print(f"[QAS] Could not override metadata panel draw: {e}")
+    
+    # Override native tags panel draw
+    try:
+        from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_tags
+        if not _original_tags_draw:
+            _original_tags_draw = ASSETBROWSER_PT_metadata_tags.draw
+        ASSETBROWSER_PT_metadata_tags.draw = _draw_tags_override
+        debug_print("[QAS] Entered edit mode - overrode tags panel draw")
+    except Exception as e:
+        debug_print(f"[QAS] Could not override tags panel draw: {e}")
+    
+    _edit_mode_active = True
+    
+    # Force UI refresh
+    for area in context.screen.areas:
+        if area.type == 'FILE_BROWSER':
+            area.tag_redraw()
+
+
+def _exit_edit_mode():
+    """Exit edit mode - restore native panel draws."""
+    global _original_metadata_draw, _original_tags_draw, _edit_mode_active, _edit_mode_asset_key
+    
+    if not _edit_mode_active:
+        return  # Not in edit mode
+    
+    # Restore native metadata panel draw
+    if _original_metadata_draw:
+        try:
+            from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata
+            ASSETBROWSER_PT_metadata.draw = _original_metadata_draw
+            debug_print("[QAS] Exited edit mode - restored metadata panel draw")
+        except Exception as e:
+            debug_print(f"[QAS] Could not restore metadata panel draw: {e}")
+        _original_metadata_draw = None
+    
+    # Restore native tags panel draw
+    if _original_tags_draw:
+        try:
+            from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_tags
+            ASSETBROWSER_PT_metadata_tags.draw = _original_tags_draw
+            debug_print("[QAS] Exited edit mode - restored tags panel draw")
+        except Exception as e:
+            debug_print(f"[QAS] Could not restore tags panel draw: {e}")
+        _original_tags_draw = None
+    
+    _edit_mode_active = False
+    _edit_mode_asset_key = ""
+    
+    # Force UI refresh
+    try:
+        import bpy
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'FILE_BROWSER':
+                    area.tag_redraw()
+    except Exception:
+        pass
+
+
+def _check_and_exit_edit_mode(context):
+    """Check if asset changed and exit edit mode if so."""
+    global _edit_mode_asset_key
+    
+    if not _edit_mode_active:
+        return False
+    
+    asset = getattr(context, "asset", None)
+    if not asset:
+        _exit_edit_mode()
+        return True
+    
+    source_path = _get_asset_source_path(context)
+    current_key = f"{source_path}:{asset.name}" if source_path else asset.name
+    
+    if current_key != _edit_mode_asset_key:
+        _exit_edit_mode()
+        return True
+    
+    return False
 
 
 classes = (
@@ -711,38 +770,18 @@ classes = (
     QAS_OT_tag_add,
     QAS_OT_tag_remove,
     QAS_MT_asset_context_menu,
-    QAS_PT_asset_metadata,
-    QAS_PT_asset_tags,
     QAS_PT_asset_actions,
     QAS_PT_save_to_library,
 )
 
 
 def register():
-    global _original_metadata_poll, _original_tags_poll, _original_preview_poll
+    global _original_preview_poll
     
     for cls in classes:
         bpy.utils.register_class(cls)
     
     bpy.types.ASSETBROWSER_MT_context_menu.append(draw_asset_context_menu)
-    
-    # Hide Blender's native metadata panel by overriding its poll (we have our own editable version)
-    try:
-        from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata
-        _original_metadata_poll = ASSETBROWSER_PT_metadata.poll
-        ASSETBROWSER_PT_metadata.poll = classmethod(lambda cls, ctx: False)
-        debug_print("[QAS] Hid ASSETBROWSER_PT_metadata via poll override")
-    except Exception as e:
-        debug_print(f"[QAS] Could not override metadata panel poll: {e}")
-    
-    # Hide Blender's native tags panel by overriding its poll (we have our own editable version)
-    try:
-        from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_tags
-        _original_tags_poll = ASSETBROWSER_PT_metadata_tags.poll
-        ASSETBROWSER_PT_metadata_tags.poll = classmethod(lambda cls, ctx: False)
-        debug_print("[QAS] Hid ASSETBROWSER_PT_metadata_tags via poll override")
-    except Exception as e:
-        debug_print(f"[QAS] Could not override tags panel poll: {e}")
     
     # Override preview panel poll to hide when 2+ assets selected (bulk ops mode)
     try:
@@ -765,32 +804,15 @@ def register():
 
 
 def unregister():
-    global _original_metadata_poll, _original_tags_poll, _original_preview_poll
+    global _original_preview_poll
+    
+    # Exit edit mode if active
+    _exit_edit_mode()
     
     bpy.types.ASSETBROWSER_MT_context_menu.remove(draw_asset_context_menu)
     
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-    
-    # Restore Blender's original metadata panel poll
-    if _original_metadata_poll:
-        try:
-            from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata
-            ASSETBROWSER_PT_metadata.poll = _original_metadata_poll
-            debug_print("[QAS] Restored original ASSETBROWSER_PT_metadata poll")
-        except Exception as e:
-            debug_print(f"[QAS] Could not restore metadata panel poll: {e}")
-        _original_metadata_poll = None
-    
-    # Restore Blender's original tags panel poll
-    if _original_tags_poll:
-        try:
-            from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_tags
-            ASSETBROWSER_PT_metadata_tags.poll = _original_tags_poll
-            debug_print("[QAS] Restored original ASSETBROWSER_PT_metadata_tags poll")
-        except Exception as e:
-            debug_print(f"[QAS] Could not restore tags panel poll: {e}")
-        _original_tags_poll = None
     
     # Restore Blender's original preview panel poll
     if _original_preview_poll:

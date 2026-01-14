@@ -80,6 +80,7 @@ from .swap import (
 
 from .metadata import (
     QAS_OT_apply_metadata_changes,
+    QAS_OT_toggle_edit_mode,
 )
 
 
@@ -92,6 +93,7 @@ classes = (
     QAS_OT_bundle_assets,
     QAS_OT_open_bundle_folder,
     QAS_OT_apply_metadata_changes,
+    QAS_OT_toggle_edit_mode,
 )
 
 
