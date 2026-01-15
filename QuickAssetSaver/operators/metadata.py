@@ -71,6 +71,10 @@ class QAS_OT_apply_metadata_changes(Operator):
                 
                 refresh_asset_browser(context)
                 
+                # Exit edit mode after successful apply
+                from .. import panels
+                panels._exit_edit_mode()
+                
                 self.report({"INFO"}, f"Updated metadata for '{meta.edit_name}'")
                 return {"FINISHED"}
             else:
@@ -350,19 +354,13 @@ class QAS_OT_toggle_edit_mode(Operator):
         from .. import panels
         
         if panels._edit_mode_active:
-            # Exit edit mode and apply changes
-            wm = context.window_manager
-            meta = getattr(wm, "qas_metadata_edit", None)
-            
-            if meta and meta.has_changes():
-                # Apply changes
-                bpy.ops.qas.apply_metadata_changes()
-            
+            # Exit edit mode without applying changes (Cancel)
             panels._exit_edit_mode()
-            self.report({'INFO'}, "Exited edit mode")
+            self.report({'INFO'}, "Cancelled edit mode")
         else:
             # Enter edit mode
             panels._enter_edit_mode(context)
+            self.report({'INFO'}, "Entered edit mode - native panels temporarily overridden")
         
         return {'FINISHED'}
 

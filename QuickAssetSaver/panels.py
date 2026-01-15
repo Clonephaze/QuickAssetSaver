@@ -394,10 +394,15 @@ class QAS_PT_asset_actions(bpy.types.Panel):
         row = layout.row()
         row.scale_y = 1.3
         if _edit_mode_active:
-            # In edit mode - show "Apply Changes" button
+            # In edit mode - show "Cancel" button
+            row.operator("qas.toggle_edit_mode", text="Cancel", icon="PANEL_CLOSE", depress=True)
+            
+            # Show "Apply Changes" button below
+            row = layout.row()
+            row.scale_y = 1.3
             has_changes = meta.has_changes() if meta else False
             row.enabled = has_changes
-            row.operator("qas.toggle_edit_mode", text="Apply Changes", icon="CHECKMARK", depress=True)
+            row.operator("qas.apply_metadata_changes", text="Apply Changes", icon="CHECKMARK")
         else:
             # Not in edit mode - show "Edit Metadata/Tags" button
             row.operator("qas.toggle_edit_mode", text="Edit Metadata/Tags", icon="GREASEPENCIL")
@@ -654,7 +659,6 @@ _original_metadata_poll = None
 _original_metadata_draw = None
 _original_tags_poll = None
 _original_tags_draw = None
-_original_preview_poll = None
 _edit_mode_active = False
 _edit_mode_asset_key = ""
 
@@ -776,36 +780,14 @@ classes = (
 
 
 def register():
-    global _original_preview_poll
-    
     for cls in classes:
         bpy.utils.register_class(cls)
     
     bpy.types.ASSETBROWSER_MT_context_menu.append(draw_asset_context_menu)
-    
-    # Override preview panel poll to hide when 2+ assets selected (bulk ops mode)
-    try:
-        from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_preview
-        _original_preview_poll = ASSETBROWSER_PT_metadata_preview.poll
-        
-        @classmethod
-        def _preview_poll_override(cls, context):
-            # Hide when 2+ assets selected (bulk ops mode)
-            selected_count = _count_selected_assets(context)
-            if selected_count >= 2:
-                return False
-            # Otherwise use original poll logic
-            return _original_preview_poll.__func__(cls, context)
-        
-        ASSETBROWSER_PT_metadata_preview.poll = _preview_poll_override
-        debug_print("[QAS] Overrode ASSETBROWSER_PT_metadata_preview poll for bulk ops")
-    except Exception as e:
-        debug_print(f"[QAS] Could not override preview panel poll: {e}")
+    debug_print("[QAS] Registered Quick Asset Saver panels")
 
 
 def unregister():
-    global _original_preview_poll
-    
     # Exit edit mode if active
     _exit_edit_mode()
     
@@ -814,12 +796,4 @@ def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     
-    # Restore Blender's original preview panel poll
-    if _original_preview_poll:
-        try:
-            from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_preview
-            ASSETBROWSER_PT_metadata_preview.poll = _original_preview_poll
-            debug_print("[QAS] Restored original ASSETBROWSER_PT_metadata_preview poll")
-        except Exception as e:
-            debug_print(f"[QAS] Could not restore preview panel poll: {e}")
-        _original_preview_poll = None
+    debug_print("[QAS] Unregistered Quick Asset Saver panels")

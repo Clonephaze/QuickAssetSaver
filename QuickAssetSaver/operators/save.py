@@ -57,6 +57,30 @@ class QAS_OT_save_asset_to_library_direct(Operator):
         wm = context.window_manager
         props = wm.qas_save_props
         
+        # Ensure asset name is synced to our properties
+        asset = getattr(context, "asset", None)
+        if asset and asset.local_id:
+            # Use asset name if our properties are empty or stale
+            if not props.asset_file_name or props.last_asset_name != asset.name:
+                props.last_asset_name = asset.name
+                props.asset_display_name = asset.name
+                props.asset_file_name = sanitize_name(asset.name)
+                
+                # Also sync metadata from asset_data if available
+                if asset.local_id.asset_data:
+                    asset_data = asset.local_id.asset_data
+                    props.asset_description = asset_data.description or ""
+                    props.asset_author = asset_data.author or ""
+                    props.asset_license = asset_data.license or ""
+                    props.asset_copyright = asset_data.copyright or ""
+                else:
+                    # Use preference defaults if no asset_data yet
+                    if prefs:
+                        props.asset_author = prefs.default_author
+                        props.asset_description = prefs.default_description
+                        props.asset_license = prefs.default_license
+                        props.asset_copyright = prefs.default_copyright
+        
         if not props.selected_library or props.selected_library == "NONE":
             self.report({"ERROR"}, "No asset library selected")
             return {"CANCELLED"}
@@ -79,6 +103,8 @@ class QAS_OT_save_asset_to_library_direct(Operator):
         
         base_name = props.asset_file_name
         if not base_name:
+            debug_print(f"[QAS Debug] asset_display_name: '{props.asset_display_name}'")
+            debug_print(f"[QAS Debug] asset_file_name: '{props.asset_file_name}'")
             self.report({"ERROR"}, "Invalid file name")
             return {"CANCELLED"}
         
