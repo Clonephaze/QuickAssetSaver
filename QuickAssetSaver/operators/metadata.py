@@ -1,4 +1,4 @@
-"""
+﻿"""
 Metadata editing operator for Quick Asset Saver.
 """
 
@@ -12,10 +12,10 @@ from .utils import debug_print, refresh_asset_browser, ALL_DATABLOCK_COLLECTIONS
 from .move import THUMBNAIL_EXTENSIONS
 
 
-class QAS_OT_apply_metadata_changes(Operator):
+class QAM_OT_apply_metadata_changes(Operator):
     """Apply metadata changes to the asset in its source .blend file."""
 
-    bl_idname = "qas.apply_metadata_changes"
+    bl_idname = "qam.apply_metadata_changes"
     bl_label = "Apply Changes"
     bl_description = "Save metadata changes back to the asset's source file"
     bl_options = {"REGISTER"}
@@ -23,14 +23,14 @@ class QAS_OT_apply_metadata_changes(Operator):
     @classmethod
     def poll(cls, context):
         wm = context.window_manager
-        meta = getattr(wm, "qas_metadata_edit", None)
+        meta = getattr(wm, "qam_metadata_edit", None)
         if not meta:
             return False
         return meta.has_changes() and meta.source_file
 
     def execute(self, context):
         wm = context.window_manager
-        meta = wm.qas_metadata_edit
+        meta = wm.qam_metadata_edit
         
         source_path = Path(meta.source_file)
         if not source_path.exists():
@@ -111,7 +111,7 @@ class QAS_OT_apply_metadata_changes(Operator):
                     for name in names:
                         if name in collection:
                             existing_db = collection[name]
-                            temp_name = f"__QAS_META_TEMP_{name}_{id(existing_db)}"
+                            temp_name = f"__QAM_META_TEMP_{name}_{id(existing_db)}"
                             original_name = existing_db.name
                             existing_db.name = temp_name
                             renamed_existing.append((existing_db, original_name))
@@ -335,9 +335,9 @@ class QAS_OT_apply_metadata_changes(Operator):
             pass
 
 
-class QAS_OT_toggle_edit_mode(Operator):
+class QAM_OT_toggle_edit_mode(Operator):
     """Toggle edit mode for asset metadata and tags"""
-    bl_idname = "qas.toggle_edit_mode"
+    bl_idname = "qam.toggle_edit_mode"
     bl_label = "Edit Metadata/Tags"
     bl_description = "Enable editing of metadata and tags (temporarily overrides native panels)"
     
@@ -366,6 +366,6 @@ class QAS_OT_toggle_edit_mode(Operator):
 
 
 classes = (
-    QAS_OT_apply_metadata_changes,
-    QAS_OT_toggle_edit_mode,
+    QAM_OT_apply_metadata_changes,
+    QAM_OT_toggle_edit_mode,
 )

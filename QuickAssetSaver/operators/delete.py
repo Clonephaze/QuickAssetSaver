@@ -1,4 +1,4 @@
-"""
+﻿"""
 Delete operator for Quick Asset Saver.
 Handles deleting assets from the Asset Browser.
 """
@@ -9,11 +9,19 @@ import bpy
 from bpy.types import Operator
 
 try:
-    from send2trash import send2trash
+    from send2trash import send2trash as _send2trash
+
+    def move_to_trash(path) -> None:
+        _send2trash(str(path))
+
 except ImportError:
-    def send2trash(path):
-        import os
-        os.remove(path)
+    def move_to_trash(path) -> None:
+        from pathlib import Path
+        p = Path(path)
+        raise RuntimeError(
+            f"Send2Trash is unavailable. '{p.name}' was NOT deleted.\n"
+            f"You can delete it manually at: {p.parent}"
+        )
 
 from .utils import (
     debug_print,
@@ -24,29 +32,12 @@ from .file_io import (
     collect_selected_assets_with_names,
     count_assets_in_blend,
 )
-
-
-# Common asset companion folder groups (case variations)
-COMPANION_FOLDER_GROUPS = [
-    ['textures', 'Textures', 'TEXTURES'],
-    ['maps', 'Maps', 'MAPS'],
-    ['materials', 'Materials', 'MATERIALS'],
-    ['shaders', 'Shaders', 'SHADERS'],
-    ['images', 'Images', 'IMAGES'],
-    ['hdri', 'HDRI', 'hdris', 'HDRIs'],
-    ['references', 'References', 'ref', 'Ref'],
-    ['documentation', 'Documentation', 'docs', 'Docs'],
-    ['resources', 'Resources', 'RESOURCES'],
-]
-
-# Flat list of all companion folder names for quick checking
-COMPANION_FOLDER_NAMES = [name for group in COMPANION_FOLDER_GROUPS for name in group]
-
-# Thumbnail file extensions
-THUMBNAIL_EXTENSIONS = ['.png', '.webp', '.jpg', '.jpeg']
-
-# Metadata file extensions
-METADATA_EXTENSIONS = ['.json', '.txt', '.md', '.xml']
+from ..constants import (
+    COMPANION_FOLDER_GROUPS,
+    COMPANION_FOLDER_NAMES,
+    THUMBNAIL_EXTENSIONS,
+    METADATA_EXTENSIONS,
+)
 
 
 def _should_cleanup_empty_folder(folder_path):
@@ -144,27 +135,19 @@ def _trash_companions_for_file(blend_path):
     trashed_count = 0
     for item in items_to_trash:
         try:
-            send2trash(str(item))
+            move_to_trash(str(item))
             debug_print(f"Sent companion to recycle bin: {item}")
             trashed_count += 1
-        except Exception as e:
+        except (RuntimeError, Exception) as e:
             debug_print(f"Warning: Could not trash {item}: {e}")
-            try:
-                if item.is_dir():
-                    shutil.rmtree(str(item))
-                else:
-                    item.unlink()
-                trashed_count += 1
-            except Exception:
-                pass
     
     return trashed_count
 
 
-class QAS_OT_delete_selected_assets(Operator):
+class QAM_OT_delete_selected_assets(Operator):
     """Delete selected assets - handles both single and multi-asset files safely"""
 
-    bl_idname = "qas.delete_selected_assets"
+    bl_idname = "qam.delete_selected_assets"
     bl_label = "Delete Selected Assets"
     bl_description = "Delete selected assets (removes from multi-asset files or sends single-asset files to trash)"
     bl_options = {"REGISTER"}
@@ -229,6 +212,11 @@ class QAS_OT_delete_selected_assets(Operator):
         )
 
     def execute(self, context):
+        from ..compatibility import is_protected_library
+        if is_protected_library(context):
+            self.report({"ERROR"}, "The Essentials library is protected and cannot be modified")
+            return {"CANCELLED"}
+
         selected_assets, _ = collect_selected_assets_with_names(context)
         if not selected_assets:
             self.report({"WARNING"}, "No assets selected")
@@ -263,18 +251,18 @@ class QAS_OT_delete_selected_assets(Operator):
                     companions_trashed += companions_count
                     
                     # Then trash the .blend file itself
-                    send2trash(str(path))
+                    move_to_trash(str(path))
                     deleted_files += 1
                     
                     # Check if parent folder is now empty and clean it up
                     if _should_cleanup_empty_folder(parent_folder):
                         try:
-                            send2trash(str(parent_folder))
+                            move_to_trash(str(parent_folder))
                             folders_cleaned += 1
                             debug_print(f"Cleaned up empty folder: {parent_folder}")
-                        except Exception as e:
+                        except (RuntimeError, Exception) as e:
                             debug_print(f"Could not cleanup empty folder {parent_folder}: {e}")
-                except Exception as e:
+                except (RuntimeError, Exception) as e:
                     print(f"Failed to send {path.name} to trash: {e}")
                     failed += 1
             else:
@@ -333,7 +321,7 @@ class QAS_OT_delete_selected_assets(Operator):
                     for name in names:
                         if name in collection:
                             existing_db = collection[name]
-                            temp_name = f"__QAS_DEL_TEMP_{name}_{id(existing_db)}"
+                            temp_name = f"__QAM_DEL_TEMP_{name}_{id(existing_db)}"
                             original_name = existing_db.name
                             existing_db.name = temp_name
                             renamed_existing.append((existing_db, original_name))
@@ -426,5 +414,5 @@ class QAS_OT_delete_selected_assets(Operator):
 
 
 classes = (
-    QAS_OT_delete_selected_assets,
+    QAM_OT_delete_selected_assets,
 )

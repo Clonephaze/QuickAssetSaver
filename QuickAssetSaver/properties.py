@@ -1,4 +1,4 @@
-"""
+﻿"""
 Properties Module - Quick Asset Saver
 ======================================
 Defines addon preferences, property groups, and configuration management.
@@ -78,8 +78,10 @@ def build_library_enum_items():
             for idx, lib in enumerate(asset_libs):
                 try:
                     if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
-                        # Get library name - handle potential encoding issues gracefully
-                        # Ensure we properly handle Unicode in all languages (Chinese, Japanese, Korean, etc.)
+                        # Skip libraries the user has disabled (checks known attribute names across versions)
+                        if not getattr(lib, 'is_enabled', getattr(lib, 'enabled', True)):
+                            continue
+
                         try:
                             lib_name = str(lib.name) if lib.name else f"Library {idx + 1}"
                         except (UnicodeDecodeError, UnicodeEncodeError, AttributeError, TypeError):
@@ -93,7 +95,7 @@ def build_library_enum_items():
                         # Display name uses the full Unicode library name
                         display_name = lib_name
                         
-                        debug_print(f"[QAS Enum Debug] Adding library {idx}: id=LIB_{idx}, name={display_name}, path={lib_path}")
+                        debug_print(f"[QAM Enum Debug] Adding library {idx}: id=LIB_{idx}, name={display_name}, path={lib_path}")
                         
                         items.append(
                             (
@@ -101,7 +103,7 @@ def build_library_enum_items():
                                 display_name,
                                 f"Save to: {lib_path}",
                                 "ASSET_MANAGER",
-                                idx,
+                                len(items),  # sequential value so 0 is always the first visible library
                             )
                         )
                 except (AttributeError, UnicodeDecodeError, TypeError) as e:
@@ -122,7 +124,7 @@ def build_library_enum_items():
         )
 
     _LIBRARY_ENUM_CACHE = items
-    debug_print(f"[QAS Enum Debug] Cached {len(_LIBRARY_ENUM_CACHE)} library items")
+    debug_print(f"[QAM Enum Debug] Cached {len(_LIBRARY_ENUM_CACHE)} library items")
     return _LIBRARY_ENUM_CACHE
 
 
@@ -139,7 +141,7 @@ def validate_string_length(value, max_length, property_name):
     return value
 
 
-class QuickAssetSaverPreferences(AddonPreferences):
+class QuickAssetManagerPreferences(AddonPreferences):
     bl_idname = __package__
 
     def get_preference_libraries(self, context):
@@ -274,7 +276,7 @@ class QuickAssetSaverPreferences(AddonPreferences):
         layout.prop(self, "max_bundle_size_mb")
 
 
-class QASSaveProperties(PropertyGroup):
+class QAMSaveProperties(PropertyGroup):
     def get_asset_libraries(self, context):
         return build_library_enum_items()
 
@@ -350,6 +352,12 @@ class QASSaveProperties(PropertyGroup):
         name="Catalog",
         description="Catalog to assign the asset to",
         items=get_catalogs,
+    )
+
+    auto_create_catalog: BoolProperty(
+        name="Copy Catalog from Current File",
+        description="Use this asset's existing catalog from the Current File. If that catalog does not exist in the target library it will be created automatically. The catalog dropdown is ignored when this is enabled",
+        default=False,
     )
 
     asset_description: StringProperty(
@@ -490,7 +498,7 @@ def _initialize_default_library(addon_prefs, preferences):
         print(f"Warning: Could not initialize default library: {e}")
 
 
-class QAS_BundlerProperties(PropertyGroup):
+class QAMBundlerProperties(PropertyGroup):
     output_name: StringProperty(
         name="Bundle Name",
         description="Base name for the bundle file (date will be appended automatically)",
@@ -543,7 +551,7 @@ class QAS_BundlerProperties(PropertyGroup):
     )
 
 
-class QAS_ManageProperties(PropertyGroup):
+class QAMManageProperties(PropertyGroup):
     def get_target_libraries(self, context):
         return build_library_enum_items()
 
@@ -596,7 +604,7 @@ class QAS_ManageProperties(PropertyGroup):
     )
 
 
-class QAS_TagItem(bpy.types.PropertyGroup):
+class QAMTagItem(bpy.types.PropertyGroup):
     name: StringProperty(
         name="Tag",
         description="Tag name",
@@ -604,7 +612,7 @@ class QAS_TagItem(bpy.types.PropertyGroup):
     )
 
 
-class QAS_MetadataEditProperties(bpy.types.PropertyGroup):
+class QAMMetadataEditProperties(bpy.types.PropertyGroup):
     source_file: StringProperty(
         name="Source File",
         description="Path to the .blend file containing this asset",
@@ -650,7 +658,7 @@ class QAS_MetadataEditProperties(bpy.types.PropertyGroup):
     )
     
     edit_tags: CollectionProperty(
-        type=QAS_TagItem,
+        type=QAMTagItem,
         name="Tags",
         description="Tags for this asset",
     )
@@ -720,40 +728,40 @@ class QAS_MetadataEditProperties(bpy.types.PropertyGroup):
 
 
 classes = (
-    QuickAssetSaverPreferences,
-    QASSaveProperties,
-    QAS_BundlerProperties,
-    QAS_ManageProperties,
-    QAS_TagItem,  # Must be registered before QAS_MetadataEditProperties
-    QAS_MetadataEditProperties,
+    QuickAssetManagerPreferences,
+    QAMSaveProperties,
+    QAMBundlerProperties,
+    QAMManageProperties,
+    QAMTagItem,  # Must be registered before QAMMetadataEditProperties
+    QAMMetadataEditProperties,
 )
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.types.WindowManager.qas_save_props = bpy.props.PointerProperty(
-        type=QASSaveProperties
+    bpy.types.WindowManager.qam_save_props = bpy.props.PointerProperty(
+        type=QAMSaveProperties
     )
-    bpy.types.WindowManager.qas_bundler_props = bpy.props.PointerProperty(
-        type=QAS_BundlerProperties
+    bpy.types.WindowManager.qam_bundler_props = bpy.props.PointerProperty(
+        type=QAMBundlerProperties
     )
-    bpy.types.WindowManager.qas_manage_props = bpy.props.PointerProperty(
-        type=QAS_ManageProperties
+    bpy.types.WindowManager.qam_manage_props = bpy.props.PointerProperty(
+        type=QAMManageProperties
     )
-    bpy.types.WindowManager.qas_metadata_edit = bpy.props.PointerProperty(
-        type=QAS_MetadataEditProperties
+    bpy.types.WindowManager.qam_metadata_edit = bpy.props.PointerProperty(
+        type=QAMMetadataEditProperties
     )
 
 
 def unregister():
-    if hasattr(bpy.types.WindowManager, "qas_metadata_edit"):
-        del bpy.types.WindowManager.qas_metadata_edit
-    if hasattr(bpy.types.WindowManager, "qas_bundler_props"):
-        del bpy.types.WindowManager.qas_bundler_props
-    if hasattr(bpy.types.WindowManager, "qas_save_props"):
-        del bpy.types.WindowManager.qas_save_props
-    if hasattr(bpy.types.WindowManager, "qas_manage_props"):
-        del bpy.types.WindowManager.qas_manage_props
+    if hasattr(bpy.types.WindowManager, "qam_metadata_edit"):
+        del bpy.types.WindowManager.qam_metadata_edit
+    if hasattr(bpy.types.WindowManager, "qam_bundler_props"):
+        del bpy.types.WindowManager.qam_bundler_props
+    if hasattr(bpy.types.WindowManager, "qam_save_props"):
+        del bpy.types.WindowManager.qam_save_props
+    if hasattr(bpy.types.WindowManager, "qam_manage_props"):
+        del bpy.types.WindowManager.qam_manage_props
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)

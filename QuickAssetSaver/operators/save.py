@@ -1,4 +1,4 @@
-"""
+﻿"""
 Save asset operator for Quick Asset Saver.
 """
 
@@ -19,18 +19,49 @@ from .catalog import get_catalog_path_from_uuid
 from .file_io import write_blend_file
 
 
-def get_addon_preferences():
-    """Get the addon preferences object."""
-    addon = bpy.context.preferences.addons.get(__package__.rsplit('.', 1)[0], None)
-    if addon:
-        return addon.preferences
-    return None
+def _auto_create_catalog_if_needed(library_path_str: str, source_catalog_uuid: str):
+    """
+    Resolve source_catalog_uuid (the asset's existing catalog from the Current File)
+    to a catalog path string, then ensure that path exists in the target library —
+    creating it if not. Returns the UUID to use when saving to the target library,
+    or None if the path could not be resolved.
+
+    Resolution order for the path:
+    1. Current file's sibling blender_assets.cats.txt (if file is saved)
+    2. The target library's own CDF (already migrated in a prior save)
+
+    Never raises — failures must not block the save.
+    """
+    from .catalog import get_catalog_path_from_uuid, create_catalog_entry
+
+    catalog_path = None
+
+    # Try to resolve from the current file's CDF first
+    if bpy.data.filepath:
+        current_dir = str(Path(bpy.data.filepath).parent)
+        catalog_path = get_catalog_path_from_uuid(current_dir, source_catalog_uuid)
+
+    # Fallback: UUID already exists in target library from a prior save
+    if not catalog_path:
+        catalog_path = get_catalog_path_from_uuid(library_path_str, source_catalog_uuid)
+
+    if not catalog_path:
+        if bpy.app.debug:
+            print(f"[QAM] auto_create_catalog: could not resolve UUID {source_catalog_uuid} to a path — skipping")
+        return None
+
+    try:
+        return create_catalog_entry(library_path_str, catalog_path)
+    except Exception as e:
+        if bpy.app.debug:
+            print(f"[QAM] auto_create_catalog: failed to create entry: {e}")
+        return None
 
 
-class QAS_OT_save_asset_to_library_direct(Operator):
+class QAM_OT_save_asset_to_library_direct(Operator):
     """Save selected asset directly from panel without popup"""
 
-    bl_idname = "qas.save_asset_to_library_direct"
+    bl_idname = "qam.save_asset_to_library_direct"
     bl_label = "Copy to Asset Library"
     bl_description = "Save this asset as a standalone .blend file in your asset library"
     bl_options = {"REGISTER", "UNDO"}
@@ -41,7 +72,6 @@ class QAS_OT_save_asset_to_library_direct(Operator):
         items=[
             ("INCREMENT", "Save with New Name", "Save as Name_001.blend, etc."),
             ("OVERWRITE", "Overwrite", "Replace the existing file"),
-            ("CANCEL", "Cancel", "Don't save"),
         ],
         default="INCREMENT",
     )
@@ -55,7 +85,7 @@ class QAS_OT_save_asset_to_library_direct(Operator):
         
         prefs = properties.get_addon_preferences(context)
         wm = context.window_manager
-        props = wm.qas_save_props
+        props = wm.qam_save_props
         
         # Ensure asset name is synced to our properties
         asset = getattr(context, "asset", None)
@@ -103,8 +133,8 @@ class QAS_OT_save_asset_to_library_direct(Operator):
         
         base_name = props.asset_file_name
         if not base_name:
-            debug_print(f"[QAS Debug] asset_display_name: '{props.asset_display_name}'")
-            debug_print(f"[QAS Debug] asset_file_name: '{props.asset_file_name}'")
+            debug_print(f"[QAM Debug] asset_display_name: '{props.asset_display_name}'")
+            debug_print(f"[QAM Debug] asset_file_name: '{props.asset_file_name}'")
             self.report({"ERROR"}, "Invalid file name")
             return {"CANCELLED"}
         
@@ -137,7 +167,7 @@ class QAS_OT_save_asset_to_library_direct(Operator):
 
         prefs = properties.get_addon_preferences(context)
         wm = context.window_manager
-        props = wm.qas_save_props
+        props = wm.qam_save_props
 
         if not props.selected_library or props.selected_library == "NONE":
             self.report({"ERROR"}, "No asset library selected")
@@ -145,9 +175,9 @@ class QAS_OT_save_asset_to_library_direct(Operator):
 
         library_name, library_path_str = get_library_by_identifier(props.selected_library)
         
-        debug_print(f"[QAS Debug] Selected library identifier: {props.selected_library}")
-        debug_print(f"[QAS Debug] Resolved library name: {library_name}")
-        debug_print(f"[QAS Debug] Resolved library path: {library_path_str}")
+        debug_print(f"[QAM Debug] Selected library identifier: {props.selected_library}")
+        debug_print(f"[QAM Debug] Resolved library name: {library_name}")
+        debug_print(f"[QAM Debug] Resolved library path: {library_path_str}")
         
         if not library_path_str:
             self.report({"ERROR"}, f"Could not find library for: {props.selected_library}. Please re-select the library.")
@@ -160,13 +190,28 @@ class QAS_OT_save_asset_to_library_direct(Operator):
 
         target_dir = library_path
 
+        # Determine the catalog UUID to assign to the saved asset.
+        # When auto-create is on: read the asset's existing catalog from the Current File
+        # and ensure it exists in the target library, creating it if needed.
+        # This lets the asset land in the right catalog even if the target library
+        # doesn't have that catalog yet — bypassing the dropdown entirely.
+        effective_catalog_uuid = props.catalog if props.catalog != "UNASSIGNED" else None
+
+        if props.auto_create_catalog:
+            asset_local = getattr(getattr(context, "asset", None), "local_id", None)
+            if asset_local and asset_local.asset_data:
+                source_catalog_id = asset_local.asset_data.catalog_id
+                if source_catalog_id:
+                    created_uuid = _auto_create_catalog_if_needed(library_path_str, source_catalog_id)
+                    if created_uuid:
+                        effective_catalog_uuid = created_uuid
+
         if (
             prefs.use_catalog_subfolders
-            and props.catalog
-            and props.catalog != "UNASSIGNED"
+            and effective_catalog_uuid
         ):
             catalog_path = get_catalog_path_from_uuid(
-                library_path_str, props.catalog
+                library_path_str, effective_catalog_uuid
             )
 
             if catalog_path:
@@ -226,6 +271,11 @@ class QAS_OT_save_asset_to_library_direct(Operator):
         if not asset_id.asset_data:
             asset_id.asset_mark()
 
+        # Capture originals before modifying in-memory — must restore after write
+        # so the source asset in the current file is not permanently affected.
+        _original_name = asset_id.name if asset_id else None
+        _original_catalog_id = asset_id.asset_data.catalog_id if asset_id and asset_id.asset_data else None
+
         if asset_id.asset_data:
             asset_id.name = props.asset_display_name
 
@@ -234,12 +284,18 @@ class QAS_OT_save_asset_to_library_direct(Operator):
             asset_id.asset_data.license = props.asset_license
             asset_id.asset_data.copyright = props.asset_copyright
 
-            if props.catalog and props.catalog != "UNASSIGNED":
-                asset_id.asset_data.catalog_id = props.catalog
+            if effective_catalog_uuid:
+                asset_id.asset_data.catalog_id = effective_catalog_uuid
 
         datablocks = {asset_id}
 
         success = write_blend_file(output_path, datablocks)
+
+        # Restore in-memory state so the source asset is unchanged in the current file
+        if _original_name is not None and asset_id:
+            asset_id.name = _original_name
+        if _original_catalog_id is not None and asset_id and asset_id.asset_data:
+            asset_id.asset_data.catalog_id = _original_catalog_id
 
         if not success:
             self.report({"ERROR"}, f"Failed to write {output_path.name}")
@@ -256,10 +312,10 @@ class QAS_OT_save_asset_to_library_direct(Operator):
         return {"FINISHED"}
 
 
-class QAS_OT_open_library_folder(Operator):
+class QAM_OT_open_library_folder(Operator):
     """Open the asset library folder in the system file browser"""
 
-    bl_idname = "qas.open_library_folder"
+    bl_idname = "qam.open_library_folder"
     bl_label = "Open Library Folder"
     bl_description = "Open the configured asset library folder in your file browser"
     bl_options = {"REGISTER"}
@@ -269,7 +325,7 @@ class QAS_OT_open_library_folder(Operator):
         from ..properties import get_library_by_identifier
 
         wm = context.window_manager
-        props = wm.qas_save_props
+        props = wm.qam_save_props
 
         if not props.selected_library or props.selected_library == "NONE":
             self.report({"ERROR"}, "No asset library selected")
@@ -290,6 +346,6 @@ class QAS_OT_open_library_folder(Operator):
 
 
 classes = (
-    QAS_OT_save_asset_to_library_direct,
-    QAS_OT_open_library_folder,
+    QAM_OT_save_asset_to_library_direct,
+    QAM_OT_open_library_folder,
 )

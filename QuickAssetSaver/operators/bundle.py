@@ -1,4 +1,4 @@
-"""
+﻿"""
 Asset bundle operator for Quick Asset Saver.
 """
 
@@ -10,6 +10,7 @@ from pathlib import Path
 import bpy
 from bpy.types import Operator
 
+from .. import properties
 from .utils import (
     debug_print,
     sanitize_name,
@@ -21,18 +22,10 @@ from .utils import (
 )
 
 
-def get_addon_preferences():
-    """Get the addon preferences object."""
-    addon = bpy.context.preferences.addons.get(__package__.rsplit('.', 1)[0], None)
-    if addon:
-        return addon.preferences
-    return None
-
-
-class QAS_OT_bundle_assets(Operator):
+class QAM_OT_bundle_assets(Operator):
     """Bundle selected assets from a user library into a single .blend file."""
 
-    bl_idname = "qas.bundle_assets"
+    bl_idname = "qam.bundle_assets"
     bl_label = "Bundle Selected Assets"
     bl_description = "Combine selected assets into a single shareable .blend file"
     bl_options = {"REGISTER", "UNDO"}
@@ -55,7 +48,7 @@ class QAS_OT_bundle_assets(Operator):
 
         asset_lib_ref = params.asset_library_reference
 
-        excluded_refs = ["LOCAL", "CURRENT", "ALL", "ESSENTIALS"]
+        excluded_refs = ["ALL", "ESSENTIALS"]
         if asset_lib_ref in excluded_refs:
             return False
 
@@ -63,6 +56,10 @@ class QAS_OT_bundle_assets(Operator):
             newer_ref = params.asset_library_ref
             if newer_ref in excluded_refs:
                 return False
+
+        # Current File context - always valid if we get here
+        if asset_lib_ref in ("LOCAL", "CURRENT"):
+            return True
 
         prefs = context.preferences
         if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
@@ -75,7 +72,20 @@ class QAS_OT_bundle_assets(Operator):
     def execute(self, context):
         """Execute the bundling operation."""
         wm = context.window_manager
-        props = wm.qas_bundler_props
+        props = wm.qam_bundler_props
+
+        # Detect source context
+        params = getattr(context.space_data, "params", None)
+        asset_lib_ref = None
+        if params:
+            asset_lib_ref = (
+                getattr(params, "asset_library_reference", None)
+                or getattr(params, "asset_library_ref", None)
+            )
+        is_current_file = asset_lib_ref in ("LOCAL", "CURRENT")
+
+        if is_current_file:
+            return self._execute_current_file_bundle(context, props)
 
         selected_assets = self._collect_selected_assets(context)
 
@@ -107,7 +117,7 @@ class QAS_OT_bundle_assets(Operator):
             )
 
         total_size_mb = self._calculate_total_size(selected_assets)
-        preferences = get_addon_preferences()
+        preferences = properties.get_addon_preferences(context)
         max_bundle_size_mb = preferences.max_bundle_size_mb if preferences else DEFAULT_MAX_BUNDLE_SIZE_MB
 
         print(f"Total asset size: {total_size_mb:.1f} MB")
@@ -138,11 +148,13 @@ class QAS_OT_bundle_assets(Operator):
             self.report({"ERROR"}, f"Could not create output directory: {e}")
             return {"CANCELLED"}
 
-        target_path = increment_filename(
-            save_path, f"{output_name}_{date_str}", ".blend"
-        )
-
         duplicate_mode = props.duplicate_mode
+        base_name = f"{output_name}_{date_str}"
+        base_path = save_path / f"{base_name}.blend"
+        if duplicate_mode == "OVERWRITE" and base_path.exists():
+            target_path = base_path
+        else:
+            target_path = increment_filename(save_path, base_name, ".blend")
         total_assets = len(selected_assets)
 
         print(f"Importing {total_assets} asset files...")
@@ -213,6 +225,53 @@ class QAS_OT_bundle_assets(Operator):
             props.success_message_time = time.time()
         
         return {"FINISHED"}
+
+    def _execute_current_file_bundle(self, context, props):
+        """Bundle selected assets from the Current File into a single .blend file."""
+        from .file_io import write_blend_file
+
+        # Collect local datablocks from selected assets
+        local_datablocks = set()
+        asset_files = None
+        if hasattr(context, "selected_asset_files") and context.selected_asset_files is not None:
+            asset_files = context.selected_asset_files
+        elif hasattr(context, "selected_assets") and context.selected_assets is not None:
+            asset_files = context.selected_assets
+
+        if asset_files:
+            for af in asset_files:
+                local_id = getattr(af, "local_id", None)
+                if local_id is not None:
+                    local_datablocks.add(local_id)
+
+        if not local_datablocks:
+            self.report({"WARNING"}, "No local assets found in selection")
+            return {"CANCELLED"}
+
+        # Build output path
+        save_path = Path(props.save_path) if props.save_path else Path.home()
+        output_name = sanitize_name(props.output_name) if props.output_name else "AssetBundle"
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+        try:
+            save_path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self.report({"ERROR"}, f"Could not create output directory: {e}")
+            return {"CANCELLED"}
+
+        target_path = increment_filename(save_path, f"{output_name}_{date_str}", ".blend")
+
+        count = len(local_datablocks)
+        success = write_blend_file(target_path, local_datablocks)
+
+        if success:
+            self.report({"INFO"}, f"Bundle saved: {target_path.name} ({count} assets)")
+            props.show_success_message = True
+            props.success_message_time = time.time()
+            return {"FINISHED"}
+        else:
+            self.report({"ERROR"}, f"Failed to save bundle to {target_path.name}")
+            return {"CANCELLED"}
 
     def _calculate_total_size(self, asset_paths):
         """Calculate the total size of all asset files in megabytes."""
@@ -473,17 +532,17 @@ class QAS_OT_bundle_assets(Operator):
             print(f"Warning: Could not copy catalog file: {e}")
 
 
-class QAS_OT_open_bundle_folder(Operator):
+class QAM_OT_open_bundle_folder(Operator):
     """Open the folder where bundles are saved."""
 
-    bl_idname = "qas.open_bundle_folder"
+    bl_idname = "qam.open_bundle_folder"
     bl_label = "Open Bundle Folder"
     bl_description = "Open the folder where asset bundles are saved"
 
     def execute(self, context):
         """Open the bundle save folder in the system file browser."""
         wm = context.window_manager
-        props = wm.qas_bundler_props
+        props = wm.qam_bundler_props
 
         folder_path = props.save_path if props.save_path else str(Path.home())
 
@@ -496,6 +555,6 @@ class QAS_OT_open_bundle_folder(Operator):
 
 
 classes = (
-    QAS_OT_bundle_assets,
-    QAS_OT_open_bundle_folder,
+    QAM_OT_bundle_assets,
+    QAM_OT_open_bundle_folder,
 )

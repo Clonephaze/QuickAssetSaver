@@ -1,31 +1,4 @@
-"""
-Quick Asset Saver operators package.
-"""
-
-if "bpy" in locals():
-    import importlib
-    if "utils" in locals():
-        importlib.reload(utils)  # noqa: F821
-    if "catalog" in locals():
-        importlib.reload(catalog)  # noqa: F821
-    if "file_io" in locals():
-        importlib.reload(file_io)  # noqa: F821
-    if "save" in locals():
-        importlib.reload(save)  # noqa: F821
-    if "bundle" in locals():
-        importlib.reload(bundle)  # noqa: F821
-    if "move" in locals():
-        importlib.reload(move)  # noqa: F821
-    if "delete" in locals():
-        importlib.reload(delete)  # noqa: F821
-    if "manage" in locals():
-        importlib.reload(manage)  # noqa: F821
-    if "swap" in locals():
-        importlib.reload(swap)  # noqa: F821
-    if "metadata" in locals():
-        importlib.reload(metadata)  # noqa: F821
-
-from . import utils, catalog, file_io, save, bundle, move, delete, manage, swap, metadata  # noqa: F401
+﻿from . import utils, catalog, file_io, save, bundle, move, delete, manage, swap, metadata  # noqa: F401
 
 import bpy
 
@@ -49,6 +22,7 @@ from .catalog import (  # noqa: F401
     get_catalogs_from_cdf,
     clear_and_set_tags,
     clear_catalog_cache,
+    QAM_OT_refresh_catalog_list,
 )
 
 from .file_io import (  # noqa: F401
@@ -60,40 +34,41 @@ from .file_io import (  # noqa: F401
 )
 
 from .save import (
-    QAS_OT_save_asset_to_library_direct,
-    QAS_OT_open_library_folder,
+    QAM_OT_save_asset_to_library_direct,
+    QAM_OT_open_library_folder,
 )
 
 from .bundle import (
-    QAS_OT_bundle_assets,
-    QAS_OT_open_bundle_folder,
+    QAM_OT_bundle_assets,
+    QAM_OT_open_bundle_folder,
 )
 
 from .manage import (
-    QAS_OT_move_selected_to_library,
-    QAS_OT_delete_selected_assets,
+    QAM_OT_move_selected_to_library,
+    QAM_OT_delete_selected_assets,
 )
 
 from .swap import (
-    QAS_OT_swap_selected_with_asset,
+    QAM_OT_swap_selected_with_asset,
 )
 
 from .metadata import (
-    QAS_OT_apply_metadata_changes,
-    QAS_OT_toggle_edit_mode,
+    QAM_OT_apply_metadata_changes,
+    QAM_OT_toggle_edit_mode,
 )
 
 
 classes = (
-    QAS_OT_save_asset_to_library_direct,
-    QAS_OT_open_library_folder,
-    QAS_OT_move_selected_to_library,
-    QAS_OT_delete_selected_assets,
-    QAS_OT_swap_selected_with_asset,
-    QAS_OT_bundle_assets,
-    QAS_OT_open_bundle_folder,
-    QAS_OT_apply_metadata_changes,
-    QAS_OT_toggle_edit_mode,
+    QAM_OT_save_asset_to_library_direct,
+    QAM_OT_open_library_folder,
+    QAM_OT_move_selected_to_library,
+    QAM_OT_delete_selected_assets,
+    QAM_OT_swap_selected_with_asset,
+    QAM_OT_bundle_assets,
+    QAM_OT_open_bundle_folder,
+    QAM_OT_apply_metadata_changes,
+    QAM_OT_toggle_edit_mode,
+    QAM_OT_refresh_catalog_list,
 )
 
 
