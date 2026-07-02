@@ -25,7 +25,6 @@ import bpy  # noqa: E402 (must come after sys.path setup)
 
 def _register_addon():
     """Register the addon if it is not already active (i.e. not installed)."""
-    import bpy
     # If the addon is installed as a Blender extension it is already registered
     # before this script runs. Check for any of its WindowManager attributes.
     if hasattr(bpy.types.WindowManager, "qam_save_props"):
@@ -41,7 +40,6 @@ def _register_addon():
 
 def _unregister_addon():
     """Unregister only if we registered manually (i.e. addon is NOT installed)."""
-    import bpy
     # If the addon was already registered by Blender's extension system,
     # let Blender manage unregistration — calling it here would double-unregister.
     if "QuickAssetSaver" in (getattr(bpy.context.preferences.addons, "keys", lambda: [])() if hasattr(bpy.context.preferences.addons, "keys") else []):

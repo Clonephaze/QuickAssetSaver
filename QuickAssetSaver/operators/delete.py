@@ -34,7 +34,6 @@ from .file_io import (
 )
 from ..constants import (
     COMPANION_FOLDER_GROUPS,
-    COMPANION_FOLDER_NAMES,
     THUMBNAIL_EXTENSIONS,
     METADATA_EXTENSIONS,
 )

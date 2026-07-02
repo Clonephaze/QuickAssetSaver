@@ -4,7 +4,6 @@ These run after the addon is registered by blender_test_runner.py.
 """
 import unittest
 import bpy
-from QuickAssetSaver.properties import get_addon_preferences
 
 
 class TestWindowManagerProps(unittest.TestCase):

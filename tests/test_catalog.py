@@ -1,9 +1,6 @@
 """Tests for catalog CDF read/write operations."""
 import unittest
 import uuid
-import tempfile
-import shutil
-from pathlib import Path
 from QuickAssetSaver.operators.catalog import (
     get_catalogs_from_cdf,
     get_catalog_path_from_uuid,

@@ -1,7 +1,7 @@
 """Tests for QuickAssetSaver/compatibility.py — uses mock contexts, no real Blender UI needed."""
 import unittest
-from tests.fixtures import MockContext, MockSpace, make_asset_browser_context
-from QuickAssetSaver.constants import EXCLUDED_LIBRARY_REFS, PROTECTED_LIBRARY_REFS
+from tests.fixtures import MockContext, MockSpace
+from QuickAssetSaver.constants import EXCLUDED_LIBRARY_REFS
 
 
 class TestIsAssetBrowserActive(unittest.TestCase):

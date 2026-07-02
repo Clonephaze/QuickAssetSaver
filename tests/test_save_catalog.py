@@ -5,17 +5,11 @@ Tests for catalog-related save operator behaviour:
 """
 import unittest
 import uuid
-import tempfile
-from pathlib import Path
 
 import bpy
 
 from QuickAssetSaver.operators.save import _auto_create_catalog_if_needed
-from QuickAssetSaver.operators.catalog import (
-    get_catalog_path_from_uuid,
-    create_catalog_entry,
-    clear_catalog_cache,
-)
+from QuickAssetSaver.operators.catalog import clear_catalog_cache
 from QuickAssetSaver.operators.file_io import write_blend_file
 from tests.fixtures import TempLibrary, make_test_asset, remove_test_asset
 
@@ -120,18 +114,12 @@ class TestAutoCreateCatalog(unittest.TestCase):
         """If the catalog path already exists in the target, return its UUID."""
         with TempLibrary(catalogs=["Characters"]) as target:
             target_uuid = target.uuid_for("Characters")
-            # Use a different source UUID for the same path
-            source_uuid = str(uuid.uuid4())
-            source_cdf_content = (
-                f"VERSION 1\n\n{source_uuid}:Characters:Characters\n"
-            )
             # Write the source CDF directly into the target dir temporarily
             # to simulate both sides having "Characters" with different UUIDs
             with TempLibrary(catalogs=["Characters"]) as source:
                 clear_catalog_cache()
-                # Call with source UUID that maps to "Characters" in the source
-                source_u = source.uuid_for("Characters")
                 # The target already has "Characters" under target_uuid.
+                _ = source  # source fixture kept alive for the duration of the call
                 # clear cache so target CDF is re-read
                 clear_catalog_cache()
                 result = _auto_create_catalog_if_needed(str(target.path), target_uuid)

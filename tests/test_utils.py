@@ -96,7 +96,6 @@ class TestBuildAssetFilename(unittest.TestCase):
         self.assertIn("S", result)
 
     def test_date_appended(self):
-        import re
         result = build_asset_filename("Asset", self._make_prefs(date=True))
         self.assertRegex(result, r"\d{4}-\d{2}-\d{2}")
 
