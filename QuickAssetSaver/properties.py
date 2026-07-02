@@ -78,6 +78,12 @@ def build_library_enum_items():
             for idx, lib in enumerate(asset_libs):
                 try:
                     if hasattr(lib, "name") and hasattr(lib, "path") and lib.path:
+                        # In Blender 5.2+, Essentials and All Libraries appear as entries
+                        # in this list. Only include user-configured (CUSTOM type) libraries.
+                        lib_type = getattr(lib, 'type', 'CUSTOM')
+                        if lib_type != 'CUSTOM':
+                            continue
+
                         # Skip libraries the user has disabled (checks known attribute names across versions)
                         if not getattr(lib, 'is_enabled', getattr(lib, 'enabled', True)):
                             continue

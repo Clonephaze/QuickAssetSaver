@@ -8,14 +8,15 @@ from pathlib import Path
 import bpy
 
 from ..constants import (
-    MIN_BLEND_FILE_SIZE,
+    MIN_BLEND_FILE_SIZE,  # noqa: F401 (re-exported for file_io.py, bundle.py)
     MAX_INCREMENTAL_FILES,
-    LARGE_SELECTION_WARNING_THRESHOLD,
-    VERY_LARGE_BUNDLE_WARNING_MB,
-    DEFAULT_MAX_BUNDLE_SIZE_MB,
+    LARGE_SELECTION_WARNING_THRESHOLD,  # noqa: F401 (re-exported for bundle.py)
+    VERY_LARGE_BUNDLE_WARNING_MB,  # noqa: F401 (re-exported for bundle.py)
+    DEFAULT_MAX_BUNDLE_SIZE_MB,  # noqa: F401 (re-exported for bundle.py)
 )
 
 DEBUG_MODE = bpy.app.debug
+
 # Complete list of all Blender datablock collection names that can contain user data.
 # Used when loading/writing .blend files to preserve ALL data in the file.
 # Note: Not all of these exist in all Blender versions.

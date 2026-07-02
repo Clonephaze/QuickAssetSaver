@@ -35,7 +35,7 @@ def is_asset_browser_active(context) -> bool:
 
 def is_user_library(context) -> bool:
     """True if the active library is a user-configured one (has a filesystem path
-    and is not a virtual or protected Blender built-in)."""
+    and is not a virtual, protected, or online Blender library)."""
     from .constants import EXCLUDED_LIBRARY_REFS
     space = context.space_data
     if not space:
@@ -46,7 +46,12 @@ def is_user_library(context) -> bool:
     ref = getattr(params, 'asset_library_reference', None)
     if not ref and params:
         ref = getattr(params, 'asset_library_ref', None)
-    return bool(ref and ref not in EXCLUDED_LIBRARY_REFS)
+    if not ref or ref in EXCLUDED_LIBRARY_REFS:
+        return False
+    # Also block online/remote libraries (Blender 5.2+)
+    if is_online_library(context):
+        return False
+    return True
 
 
 def is_protected_library(context) -> bool:

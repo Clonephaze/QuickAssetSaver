@@ -57,6 +57,11 @@ class QAM_OT_bundle_assets(Operator):
             if newer_ref in excluded_refs:
                 return False
 
+        # Block online/remote libraries (Blender 5.2+)
+        from ..compatibility import is_online_library
+        if is_online_library(context):
+            return False
+
         # Current File context - always valid if we get here
         if asset_lib_ref in ("LOCAL", "CURRENT"):
             return True
@@ -64,6 +69,10 @@ class QAM_OT_bundle_assets(Operator):
         prefs = context.preferences
         if hasattr(prefs, "filepaths") and hasattr(prefs.filepaths, "asset_libraries"):
             for lib in prefs.filepaths.asset_libraries:
+                # Only match user-configured (CUSTOM) libraries; in 5.2+ Essentials/All
+                # Libraries appear in this list and must not be treated as valid targets
+                if getattr(lib, 'type', 'CUSTOM') != 'CUSTOM':
+                    continue
                 if hasattr(lib, "name") and lib.name == asset_lib_ref:
                     return True
 

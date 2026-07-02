@@ -58,8 +58,10 @@ class QAM_OT_swap_selected_with_asset(Operator):
         instance_collections = False
         
         import_method = getattr(space.params, 'import_method', 'FOLLOW_PREFS')
-        
-        if import_method == 'FOLLOW_PREFS':
+
+        # 'FOLLOW_PREFS' was renamed to 'FOLLOW_ASSET' in Blender 5.2 (commit e428159ecc).
+        # Handle both values so the operator works across versions.
+        if import_method in ('FOLLOW_PREFS', 'FOLLOW_ASSET'):
             prefs = context.preferences.filepaths
             import_method = getattr(prefs, 'asset_import_method', 'APPEND')
         

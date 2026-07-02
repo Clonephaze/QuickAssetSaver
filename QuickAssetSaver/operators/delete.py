@@ -211,9 +211,12 @@ class QAM_OT_delete_selected_assets(Operator):
         )
 
     def execute(self, context):
-        from ..compatibility import is_protected_library
+        from ..compatibility import is_protected_library, is_online_library
         if is_protected_library(context):
             self.report({"ERROR"}, "The Essentials library is protected and cannot be modified")
+            return {"CANCELLED"}
+        if is_online_library(context):
+            self.report({"ERROR"}, "Online libraries cannot be modified")
             return {"CANCELLED"}
 
         selected_assets, _ = collect_selected_assets_with_names(context)
