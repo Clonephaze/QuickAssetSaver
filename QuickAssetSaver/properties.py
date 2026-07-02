@@ -11,7 +11,7 @@ from bpy.types import AddonPreferences, PropertyGroup
 
 MAX_FILENAME_AFFIX_LENGTH = 32
 NONE_LIBRARY_IDENTIFIER = "NONE"
-DEBUG_MODE = False
+DEBUG_MODE = bpy.app.debug
 
 # Must cache enum items or Blender garbage-collects strings before display
 _LIBRARY_ENUM_CACHE = []

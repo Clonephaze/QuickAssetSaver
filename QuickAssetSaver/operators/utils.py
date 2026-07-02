@@ -7,8 +7,6 @@ from pathlib import Path
 
 import bpy
 
-DEBUG_MODE = False
-
 from ..constants import (
     MIN_BLEND_FILE_SIZE,
     MAX_INCREMENTAL_FILES,
@@ -17,6 +15,7 @@ from ..constants import (
     DEFAULT_MAX_BUNDLE_SIZE_MB,
 )
 
+DEBUG_MODE = bpy.app.debug
 # Complete list of all Blender datablock collection names that can contain user data.
 # Used when loading/writing .blend files to preserve ALL data in the file.
 # Note: Not all of these exist in all Blender versions.
