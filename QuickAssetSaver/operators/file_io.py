@@ -9,6 +9,7 @@ from pathlib import Path
 import bpy
 
 from .utils import debug_print, MIN_BLEND_FILE_SIZE, ASSET_DATABLOCK_COLLECTIONS
+from ..compatibility import get_sequencer_strips
 
 
 def collect_external_dependencies(datablock):
@@ -127,7 +128,7 @@ def collect_external_dependencies(datablock):
             if datablock.world.use_nodes and datablock.world.node_tree:
                 collect_from_node_tree(datablock.world.node_tree)
         if hasattr(datablock, 'sequence_editor') and datablock.sequence_editor:
-            for seq in datablock.sequence_editor.sequences_all:
+            for seq in get_sequencer_strips(datablock.sequence_editor):
                 if hasattr(seq, 'sound') and seq.sound:
                     dependencies['sounds'].add(seq.sound)
                 if hasattr(seq, 'clip') and seq.clip:
@@ -158,6 +159,59 @@ def collect_external_dependencies(datablock):
         dependencies['volumes'].add(datablock)
 
     return dependencies
+
+
+def _strip_scene_references(node_tree, _seen=None):
+    """
+    Temporarily clear direct Scene references inside a node tree so writing
+    it doesn't pull the entire scene (and everything it contains) into the
+    asset file.
+
+    Compositor node groups commonly contain a Render Layer node with a
+    'scene' pointer property. bpy.data.libraries.write() follows ID
+    pointers recursively, so leaving that pointer set causes the referenced
+    Scene - and all objects/collections it contains - to be written
+    alongside the asset. Geometry/Shader node groups don't normally hold
+    such references, so this only has an effect on compositor trees.
+
+    Recurses into nested node groups (e.g. compositor group nodes) so
+    references buried a few levels deep are also caught.
+
+    Args:
+        node_tree: bpy.types.NodeTree to scan
+        _seen: internal set of already-visited node tree names (recursion guard)
+
+    Returns:
+        list of (node, attr_name, original_value) tuples to restore afterward
+    """
+    if _seen is None:
+        _seen = set()
+    if node_tree is None or node_tree.name in _seen:
+        return []
+    _seen.add(node_tree.name)
+
+    cleared = []
+    for node in node_tree.nodes:
+        scene = getattr(node, "scene", None)
+        if isinstance(scene, bpy.types.Scene):
+            cleared.append((node, "scene", scene))
+            node.scene = None
+            debug_print(f"Cleared scene reference on node '{node.name}' to avoid pulling entire scene into asset file")
+
+        nested_tree = getattr(node, "node_tree", None)
+        if nested_tree is not None:
+            cleared.extend(_strip_scene_references(nested_tree, _seen))
+
+    return cleared
+
+
+def _restore_scene_references(cleared_refs):
+    """Restore Scene pointers previously cleared by _strip_scene_references."""
+    for node, attr, value in cleared_refs:
+        try:
+            setattr(node, attr, value)
+        except (RuntimeError, ReferenceError, AttributeError):
+            pass
 
 
 def collect_selected_assets_with_names(context):
@@ -356,11 +410,16 @@ def write_blend_file(filepath, datablocks):
         'movieclips': [],
         'volumes': [],
     }
+    cleared_scene_refs = []
 
     try:
         filepath = Path(filepath)
         temp_dir = filepath.parent
         temp_file = temp_dir / f".tmp_{filepath.name}"
+
+        for datablock in datablocks:
+            if isinstance(datablock, bpy.types.NodeTree):
+                cleared_scene_refs.extend(_strip_scene_references(datablock))
 
         all_dependencies = {
             'images': set(),
@@ -425,6 +484,9 @@ def write_blend_file(filepath, datablocks):
             compress=True,
         )
 
+        _restore_scene_references(cleared_scene_refs)
+        cleared_scene_refs = []
+
         for image in packed_items['images']:
             try:
                 if image.packed_file:
@@ -461,6 +523,7 @@ def write_blend_file(filepath, datablocks):
 
     except (OSError, IOError) as e:
         print(f"Error writing blend file: {e}")
+        _restore_scene_references(cleared_scene_refs)
         _restore_packed_items(packed_items)
         if temp_file and temp_file.exists():
             try:

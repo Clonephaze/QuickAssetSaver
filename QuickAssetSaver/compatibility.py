@@ -85,3 +85,40 @@ def is_online_library(context) -> bool:
     if lib_type is not None:
         return lib_type not in {'LOCAL', 'CUSTOM', 'ESSENTIALS', 'ALL'}
     return False
+
+
+def get_sequencer_strips(sequence_editor):
+    """
+    Returns all strips in a sequence editor across Blender API renames.
+
+    Blender 5.2 renamed SequenceEditor.sequences_all -> SequenceEditor.strips_all
+    (part of the VSE "Strip" rework, Sequence -> Strip).
+
+    Returns an empty list if the sequence editor is None or has neither
+    attribute.
+    """
+    if sequence_editor is None:
+        return []
+    strips = getattr(sequence_editor, 'sequences_all', None)
+    if strips is None:
+        strips = getattr(sequence_editor, 'strips_all', None)
+    return list(strips) if strips is not None else []
+
+
+def ensure_scene_compositor_node_tree(scene, name="Compositing Nodetree"):
+    """
+    Create (if needed) and return a scene's compositor node tree, across
+    Blender API generations.
+
+    Blender < 5.2: the compositor tree is created via `scene.use_nodes = True`
+    and accessed as `scene.node_tree` (a single tree embedded per-scene).
+    Blender 5.2+: compositor trees are standalone bpy.data.node_groups
+    entries assigned via `scene.compositing_node_group` (Scene.node_tree was
+    removed as part of making compositor trees shareable/markable as assets).
+    """
+    if hasattr(scene, 'node_tree'):
+        scene.use_nodes = True
+        return scene.node_tree
+    node_tree = bpy.data.node_groups.new(name, 'CompositorNodeTree')
+    scene.compositing_node_group = node_tree
+    return node_tree

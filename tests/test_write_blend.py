@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 import bpy
 from QuickAssetSaver.operators.file_io import write_blend_file, count_assets_in_blend
-from tests.fixtures import make_test_asset, remove_test_asset
+from tests.fixtures import make_test_asset, remove_test_asset, make_compositor_asset, remove_compositor_asset
 
 
 class TestWriteBlendFile(unittest.TestCase):
@@ -128,3 +128,133 @@ class TestCountAssetsInBlend(unittest.TestCase):
     def test_returns_zero_for_nonexistent_file(self):
         result = count_assets_in_blend(Path("/nonexistent/file.blend"))
         self.assertEqual(result["count"], 0)
+
+
+class TestWriteBlendCompositorAssets(unittest.TestCase):
+    """Regression test for issue #14: a compositor node group asset with a
+    Render Layer node must not pull its referenced Scene (and everything the
+    scene contains) into the written asset file."""
+
+    def setUp(self):
+        self.node_tree, self.scene, self.owner_scene = make_compositor_asset()
+
+    def tearDown(self):
+        remove_compositor_asset(self.node_tree, self.scene, self.owner_scene)
+
+    def test_does_not_write_referenced_scene(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "compositor.blend"
+            result = write_blend_file(out, {self.node_tree})
+            self.assertTrue(result)
+
+            with bpy.data.libraries.load(str(out), link=False) as (src, _dst):
+                scene_names = list(src.scenes)
+
+            self.assertNotIn(self.scene.name, scene_names)
+
+    def test_render_layers_scene_pointer_restored_after_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "compositor.blend"
+            write_blend_file(out, {self.node_tree})
+
+            render_layers_node = next(
+                n for n in self.node_tree.nodes if n.bl_idname == 'CompositorNodeRLayers'
+            )
+            self.assertEqual(render_layers_node.scene, self.scene)
+
+
+class TestWriteBlendAllAssetTypes(unittest.TestCase):
+    """Smoke-test write_blend_file against every datablock type the Asset
+    Browser allows marking as an asset (see ASSET_DATABLOCK_COLLECTIONS).
+
+    These are deliberately lightweight — just "does it write without
+    error and produce a real file" — to catch type-specific writer bugs
+    early. Object and NodeTree (compositor) have more thorough dedicated
+    tests elsewhere in this file.
+    """
+
+    def _assert_write_succeeds(self, datablock):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "smoke.blend"
+            self.assertTrue(write_blend_file(out, {datablock}))
+            self.assertTrue(out.exists())
+            self.assertGreater(out.stat().st_size, 100)
+
+    def test_material_asset(self):
+        mat = bpy.data.materials.new("QAM_SmokeMaterial")
+        mat.asset_mark()
+        try:
+            self._assert_write_succeeds(mat)
+        finally:
+            bpy.data.materials.remove(mat)
+
+    def test_world_asset(self):
+        world = bpy.data.worlds.new("QAM_SmokeWorld")
+        world.asset_mark()
+        try:
+            self._assert_write_succeeds(world)
+        finally:
+            bpy.data.worlds.remove(world)
+
+    def test_action_asset(self):
+        action = bpy.data.actions.new("QAM_SmokeAction")
+        action.asset_mark()
+        try:
+            self._assert_write_succeeds(action)
+        finally:
+            bpy.data.actions.remove(action)
+
+    def test_armature_asset(self):
+        armature = bpy.data.armatures.new("QAM_SmokeArmature")
+        armature.asset_mark()
+        try:
+            self._assert_write_succeeds(armature)
+        finally:
+            bpy.data.armatures.remove(armature)
+
+    def test_curve_asset(self):
+        curve = bpy.data.curves.new("QAM_SmokeCurve", type='CURVE')
+        curve.asset_mark()
+        try:
+            self._assert_write_succeeds(curve)
+        finally:
+            bpy.data.curves.remove(curve)
+
+    def test_collection_asset(self):
+        collection = bpy.data.collections.new("QAM_SmokeCollection")
+        collection.asset_mark()
+        try:
+            self._assert_write_succeeds(collection)
+        finally:
+            bpy.data.collections.remove(collection)
+
+    def test_mesh_asset(self):
+        mesh = bpy.data.meshes.new("QAM_SmokeMesh")
+        mesh.asset_mark()
+        try:
+            self._assert_write_succeeds(mesh)
+        finally:
+            bpy.data.meshes.remove(mesh)
+
+    def test_brush_asset(self):
+        brush = bpy.data.brushes.new("QAM_SmokeBrush", mode='TEXTURE_PAINT')
+        brush.asset_mark()
+        try:
+            self._assert_write_succeeds(brush)
+        finally:
+            bpy.data.brushes.remove(brush)
+
+    def test_scene_asset(self):
+        # Use a copy of the active scene rather than bpy.data.scenes.new():
+        # a brand-new, never-initialized scene's view layer can be missing
+        # data that some Blender versions' partial-write path dereferences
+        # unconditionally, crashing the process (observed as a native
+        # access violation on 5.2 alpha). A copy of an existing, fully
+        # initialized scene is both safer and more representative of a
+        # real Scene asset a user would actually save.
+        scene = bpy.context.scene.copy()
+        scene.asset_mark()
+        try:
+            self._assert_write_succeeds(scene)
+        finally:
+            bpy.data.scenes.remove(scene)

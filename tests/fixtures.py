@@ -136,3 +136,71 @@ def remove_test_asset(obj):
     bpy.data.objects.remove(obj, do_unlink=True)
     if mesh and mesh.users == 0:
         bpy.data.meshes.remove(mesh)
+
+
+def make_compositor_asset(name="QAM_CompositorTest", scene_name="QAM_CompositorTest_Scene"):
+    """
+    Create a compositor node group asset containing a Render Layer node
+    that points at a dedicated Scene, and mark the node group as an asset.
+
+    Mirrors the real-world setup that triggers the "whole project copied"
+    bug (issue #14): a Render Layer node holds a direct pointer to a Scene,
+    which bpy.data.libraries.write() will otherwise pull in wholesale.
+
+    A Render Layers node can only live in "the compositing node tree of a
+    scene in the file" (a hard restriction enforced by Blender itself, not
+    just newer versions), so the node tree we mark as an asset must be a
+    scene's own compositor tree rather than a free-floating node group.
+    ensure_scene_compositor_node_tree() handles both the pre-5.2 API
+    (scene.use_nodes / scene.node_tree) and 5.2+ (scene.compositing_node_group).
+
+    Returns (node_tree, scene, owner_scene). Caller is responsible for
+    cleanup via remove_compositor_asset(node_tree, scene, owner_scene).
+    """
+    import bpy
+    from QuickAssetSaver.compatibility import ensure_scene_compositor_node_tree
+    owner_scene = bpy.data.scenes.new(f"{name}_Owner")
+    node_tree = ensure_scene_compositor_node_tree(owner_scene)
+
+    scene = bpy.data.scenes.new(scene_name)
+    # Give the scene something non-trivial so an accidental copy is detectable.
+    bpy.ops.mesh.primitive_cube_add()
+    cube = bpy.context.active_object
+    for coll in list(cube.users_collection):
+        coll.objects.unlink(cube)
+    scene.collection.objects.link(cube)
+
+    render_layers_node = next(
+        (n for n in node_tree.nodes if n.bl_idname == 'CompositorNodeRLayers'), None
+    )
+    if render_layers_node is None:
+        render_layers_node = node_tree.nodes.new('CompositorNodeRLayers')
+    render_layers_node.scene = scene
+
+    node_tree.asset_mark()
+    return node_tree, scene, owner_scene
+
+
+def remove_compositor_asset(node_tree, scene, owner_scene):
+    """Remove a compositor node group asset and its associated scenes/objects."""
+    import bpy
+    for obj in list(scene.collection.objects):
+        mesh = obj.data if obj.type == 'MESH' else None
+        bpy.data.objects.remove(obj, do_unlink=True)
+        if mesh and mesh.users == 0:
+            bpy.data.meshes.remove(mesh)
+    bpy.data.scenes.remove(scene)
+    # asset_mark() sets a fake user, which would otherwise keep the node
+    # tree alive indefinitely — clear it either way.
+    node_tree.use_fake_user = False
+    try:
+        # Blender 5.2+: the compositor tree is a standalone bpy.data.node_groups
+        # entry, so it must be removed explicitly (do_unlink clears
+        # owner_scene's pointer to it).
+        bpy.data.node_groups.remove(node_tree, do_unlink=True)
+    except RuntimeError:
+        # Older Blender versions embed the compositor tree in the scene
+        # (not a standalone bpy.data.node_groups entry) — it's freed
+        # automatically when the owning scene is removed below.
+        pass
+    bpy.data.scenes.remove(owner_scene)
