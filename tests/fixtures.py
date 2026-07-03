@@ -166,6 +166,7 @@ def make_compositor_asset(name="QAM_CompositorTest", scene_name="QAM_CompositorT
     # Give the scene something non-trivial so an accidental copy is detectable.
     bpy.ops.mesh.primitive_cube_add()
     cube = bpy.context.active_object
+    assert cube is not None
     for coll in list(cube.users_collection):
         coll.objects.unlink(cube)
     scene.collection.objects.link(cube)
