@@ -63,12 +63,6 @@ class TestSavePropsFields(unittest.TestCase):
     def test_has_asset_file_name(self):
         self.assertTrue(hasattr(self.props, "asset_file_name"))
 
-    def test_has_conflict_resolution(self):
-        self.assertTrue(hasattr(self.props, "conflict_resolution"))
-
-    def test_conflict_resolution_default_increment(self):
-        self.assertEqual(self.props.conflict_resolution, "INCREMENT")
-
     def test_has_show_success_message(self):
         self.assertTrue(hasattr(self.props, "show_success_message"))
 

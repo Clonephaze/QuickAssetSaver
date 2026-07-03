@@ -4,6 +4,7 @@ Handles moving assets between libraries with full companion file support.
 """
 
 import shutil
+import time
 from pathlib import Path
 
 import bpy
@@ -84,6 +85,22 @@ def _should_cleanup_empty_folder(folder_path):
         
     except Exception:
         return False
+
+
+def _resolve_move_conflict(dest, conflict_resolution):
+    """Resolve a destination path against an existing-file conflict.
+
+    Returns (final_dest, skip). If skip is True, the caller should skip
+    this item entirely (user chose to skip files that already exist).
+    """
+    if not dest.exists():
+        return dest, False
+    if conflict_resolution == "OVERWRITE":
+        return dest, False
+    if conflict_resolution == "CANCEL":  # "Skip" in the UI
+        return dest, True
+    # INCREMENT (default)
+    return increment_filename(dest.parent, dest.stem, dest.suffix), False
 
 
 class QAM_OT_move_selected_to_library(Operator):
@@ -221,8 +238,10 @@ class QAM_OT_move_selected_to_library(Operator):
                             debug_print("[Move Debug] Failed to update catalog")
                         continue
                     
-                    if dest.exists():
-                        dest = increment_filename(dest.parent, dest.stem, dest.suffix)
+                    dest, skip = _resolve_move_conflict(dest, manage.move_conflict_resolution)
+                    if skip:
+                        skipped += 1
+                        continue
                     
                     success = self._move_file_with_companions(
                         src_path, dest, selected_names, catalog_to_set
@@ -238,8 +257,10 @@ class QAM_OT_move_selected_to_library(Operator):
                             dest_filename = f"{sanitize_name(asset_name)}.blend"
                             dest = dest_base / dest_filename
                             
-                            if dest.exists():
-                                dest = increment_filename(dest.parent, sanitize_name(asset_name), ".blend")
+                            dest, skip = _resolve_move_conflict(dest, manage.move_conflict_resolution)
+                            if skip:
+                                skipped += 1
+                                continue
                             
                             success = self._extract_asset_to_file(
                                 src_path, asset_name, dest, catalog_to_set
@@ -269,6 +290,9 @@ class QAM_OT_move_selected_to_library(Operator):
             msg_parts.append(f"skipped {skipped}")
         
         self.report({"INFO"}, ", ".join(msg_parts) if msg_parts else "No changes made")
+        if moved or extracted:
+            manage.show_success_message = True
+            manage.success_message_time = time.time()
         return {"FINISHED"}
 
     def _save_local_assets_to_library(self, context, manage, target_root, prefs):
@@ -278,7 +302,7 @@ class QAM_OT_move_selected_to_library(Operator):
         datablock stays in the current file — we cannot safely delete it
         without modifying the user's unsaved work.
         """
-        from .utils import sanitize_name, increment_filename, refresh_asset_browser
+        from .utils import sanitize_name, refresh_asset_browser
         from .file_io import write_blend_file
         from .catalog import get_catalog_path_from_uuid
 
@@ -325,8 +349,10 @@ class QAM_OT_move_selected_to_library(Operator):
             # Build destination path
             filename = sanitize_name(local_id.name)
             dest_path = dest_base / f"{filename}.blend"
-            if dest_path.exists():
-                dest_path = increment_filename(dest_base, filename, ".blend")
+            dest_path, skip = _resolve_move_conflict(dest_path, manage.move_conflict_resolution)
+            if skip:
+                skipped += 1
+                continue
 
             # Temporarily apply target catalog to the datablock, write, then restore
             original_catalog_id = local_id.asset_data.catalog_id
@@ -348,6 +374,8 @@ class QAM_OT_move_selected_to_library(Operator):
 
         if saved:
             self.report({"INFO"}, f"Saved {saved} asset(s) to library" + (f" ({skipped} skipped)" if skipped else ""))
+            manage.show_success_message = True
+            manage.success_message_time = time.time()
         else:
             self.report({"WARNING"}, "No assets were saved")
 

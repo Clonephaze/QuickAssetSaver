@@ -57,6 +57,7 @@ class QAM_PT_bulk_operations(bpy.types.Panel):
         if manage_props is not None:
             move_box.prop(manage_props, "move_target_library", text="Library")
             move_box.prop(manage_props, "move_target_catalog", text="Catalog")
+            move_box.prop(manage_props, "move_conflict_resolution", text="If Exists")
 
         move_row = move_box.row()
         move_row.scale_y = 1.2
@@ -65,6 +66,13 @@ class QAM_PT_bulk_operations(bpy.types.Panel):
             text=f"Move {selected_count} Assets",
             icon="EXPORT",
         )
+
+        if manage_props is not None and manage_props.show_success_message:
+            if time.time() - manage_props.success_message_time < 4.0:
+                success_box = move_box.box()
+                success_box.label(text="Moved!", icon="CHECKMARK")
+            else:
+                manage_props.show_success_message = False
 
         layout.separator()
 

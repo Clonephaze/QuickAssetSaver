@@ -1,4 +1,6 @@
-﻿import bpy
+﻿import time
+
+import bpy
 from ..compatibility import is_asset_browser_active, is_protected_library
 
 
@@ -123,6 +125,7 @@ class QAM_PT_asset_actions(bpy.types.Panel):
         if manage:
             box.prop(manage, "move_target_library", text="Library")
             box.prop(manage, "move_target_catalog", text="Catalog")
+            box.prop(manage, "move_conflict_resolution", text="If Exists")
         move_row = box.row()
         move_row.scale_y = 1.2
         move_row.operator(
@@ -130,6 +133,13 @@ class QAM_PT_asset_actions(bpy.types.Panel):
             text="Move Asset",
             icon="EXPORT",
         )
+
+        if manage is not None and manage.show_success_message:
+            if time.time() - manage.success_message_time < 4.0:
+                success_box = box.box()
+                success_box.label(text="Moved!", icon="CHECKMARK")
+            else:
+                manage.show_success_message = False
 
         # Delete section
         layout.separator()

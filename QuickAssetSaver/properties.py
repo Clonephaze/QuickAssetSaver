@@ -396,17 +396,6 @@ class QAMSaveProperties(PropertyGroup):
         default="",
     )
 
-    conflict_resolution: EnumProperty(
-        name="Overwrite",
-        description="What to do if a file with the same name already exists",
-        items=[
-            ("INCREMENT", "Increment", "Save as Name_001.blend, etc.", "DUPLICATE", 0),
-            ("OVERWRITE", "Overwrite", "Replace the existing file", "FILE_REFRESH", 1),
-            ("CANCEL", "Cancel", "Don't save if file exists", "CANCEL", 2),
-        ],
-        default="INCREMENT",
-    )
-
     show_success_message: BoolProperty(
         name="Show Success Message",
         description="Internal flag to show thank you message after save",
@@ -607,6 +596,20 @@ class QAMManageProperties(PropertyGroup):
             ("CANCEL", "Skip", "Skip files that already exist", "CANCEL", 2),
         ],
         default="INCREMENT",
+    )
+
+    show_success_message: BoolProperty(
+        name="Show Success Message",
+        description="Internal flag to show confirmation message after move",
+        default=False,
+        options={"SKIP_SAVE", "HIDDEN"},
+    )
+
+    success_message_time: bpy.props.FloatProperty(
+        name="Success Message Time",
+        description="Timestamp when success message was shown",
+        default=0.0,
+        options={"SKIP_SAVE", "HIDDEN"},
     )
 
 

@@ -52,9 +52,7 @@ class QAM_PT_save_to_library(bpy.types.Panel):
         catalog_row.enabled = not props.auto_create_catalog
         catalog_row.prop(props, "catalog", text="Catalog")
         catalog_row.operator("qam.refresh_catalog_list", icon="FILE_REFRESH", text="")
-        row = layout.row()
-        row.scale_y = 0.85
-        row.prop(props, "auto_create_catalog")
+        layout.prop(props, "auto_create_catalog")
 
         # Path preview
         if props.selected_library and props.selected_library != "NONE":
@@ -77,9 +75,7 @@ class QAM_PT_save_to_library(bpy.types.Panel):
         if props.show_success_message:
             if time.time() - props.success_message_time < 4.0:
                 box = layout.box()
-                col = box.column()
-                col.alert = True
-                col.label(text="Saved!", icon="CHECKMARK")
+                box.label(text="Saved!", icon="CHECKMARK")
             else:
                 props.show_success_message = False
 
@@ -92,7 +88,7 @@ class QAM_PT_save_to_library(bpy.types.Panel):
 
         # Open folder button
         row = layout.row()
-        row.operator("qam.open_library_folder")
+        row.operator("qam.open_library_folder", icon="FILE_FOLDER")
 
 
 classes = (QAM_PT_save_to_library,)
