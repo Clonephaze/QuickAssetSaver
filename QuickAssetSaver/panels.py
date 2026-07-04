@@ -1,4 +1,4 @@
-
+﻿
 import bpy
 
 from .properties import DEBUG_MODE
@@ -97,10 +97,10 @@ def _find_tool_props_keybinding():
     return "N"
 
 
-class QAS_PT_save_hint(bpy.types.Panel):
+class QAM_PT_save_hint(bpy.types.Panel):
     """Hint panel shown in Current File to direct users to the right-side Save panel."""
     bl_label = "Quick Asset Saver"
-    bl_idname = "QAS_PT_save_hint"
+    bl_idname = "QAM_PT_save_hint"
     bl_space_type = "FILE_BROWSER"
     bl_region_type = "TOOLS"
     bl_category = "Assets"
@@ -131,29 +131,29 @@ class QAS_PT_save_hint(bpy.types.Panel):
         key_str = _find_tool_props_keybinding()
         box.label(text=f"Open it with your ( {key_str} ) key.", icon="BLANK1")
 
-class QAS_UL_metadata_tags(bpy.types.UIList):
+class QAM_UL_metadata_tags(bpy.types.UIList):
     """UIList for displaying and editing asset tags."""
-    bl_idname = "QAS_UL_metadata_tags"
+    bl_idname = "QAM_UL_metadata_tags"
     
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         # Draw the tag name as an editable property
         layout.prop(item, "name", text="", emboss=False, icon='NONE')
 
 
-class QAS_OT_tag_add(bpy.types.Operator):
+class QAM_OT_tag_add(bpy.types.Operator):
     """Add a new tag to the asset"""
-    bl_idname = "qas.tag_add"
+    bl_idname = "qam.tag_add"
     bl_label = "Add Tag"
     bl_options = {'REGISTER', 'UNDO'}
     
     @classmethod
     def poll(cls, context):
         wm = context.window_manager
-        return hasattr(wm, "qas_metadata_edit")
+        return hasattr(wm, "qam_metadata_edit")
     
     def execute(self, context):
         wm = context.window_manager
-        meta = wm.qas_metadata_edit
+        meta = wm.qam_metadata_edit
         
         tag = meta.edit_tags.add()
         tag.name = "Tag"
@@ -162,23 +162,23 @@ class QAS_OT_tag_add(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class QAS_OT_tag_remove(bpy.types.Operator):
+class QAM_OT_tag_remove(bpy.types.Operator):
     """Remove the selected tag"""
-    bl_idname = "qas.tag_remove"
+    bl_idname = "qam.tag_remove"
     bl_label = "Remove Tag"
     bl_options = {'REGISTER', 'UNDO'}
     
     @classmethod
     def poll(cls, context):
         wm = context.window_manager
-        if not hasattr(wm, "qas_metadata_edit"):
+        if not hasattr(wm, "qam_metadata_edit"):
             return False
-        meta = wm.qas_metadata_edit
+        meta = wm.qam_metadata_edit
         return len(meta.edit_tags) > 0 and meta.active_tag_index >= 0
     
     def execute(self, context):
         wm = context.window_manager
-        meta = wm.qas_metadata_edit
+        meta = wm.qam_metadata_edit
         
         if meta.active_tag_index < len(meta.edit_tags):
             meta.edit_tags.remove(meta.active_tag_index)
@@ -189,14 +189,14 @@ class QAS_OT_tag_remove(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class QAS_MT_asset_context_menu(bpy.types.Menu):
+class QAM_MT_asset_context_menu(bpy.types.Menu):
     """Quick Asset Saver context menu items for the Asset Browser."""
-    bl_idname = "QAS_MT_asset_context_menu"
+    bl_idname = "QAM_MT_asset_context_menu"
     bl_label = "Quick Asset Saver"
 
     def draw(self, context):
         layout = self.layout
-        layout.operator("qas.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
+        layout.operator("qam.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
 
 
 def draw_asset_context_menu(self, context):
@@ -216,15 +216,15 @@ def draw_asset_context_menu(self, context):
     if not is_current_file:
         layout = self.layout
         layout.separator()
-        layout.operator("qas.swap_selected_with_asset", text="Replace Selected Objects", icon="FILE_REFRESH")
-        layout.operator("qas.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
+        layout.operator("qam.swap_selected_with_asset", text="Replace Selected Objects", icon="FILE_REFRESH")
+        layout.operator("qam.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
 
 
 # ============================================================================
 # BULK OPERATIONS PANEL (RIGHT SIDE - for 2+ assets)
 # ============================================================================
 
-class QAS_PT_bulk_operations(bpy.types.Panel):
+class QAM_PT_bulk_operations(bpy.types.Panel):
     """Panel for bulk operations when 2+ assets are selected."""
     
     bl_space_type = 'FILE_BROWSER'
@@ -256,8 +256,8 @@ class QAS_PT_bulk_operations(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         wm = context.window_manager
-        bundler_props = wm.qas_bundler_props
-        manage_props = getattr(wm, "qas_manage_props", None)
+        bundler_props = wm.qam_bundler_props
+        manage_props = getattr(wm, "qam_manage_props", None)
         
         selected_count = _count_selected_assets(context)
         
@@ -273,7 +273,7 @@ class QAS_PT_bulk_operations(bpy.types.Panel):
         
         row = box.row()
         row.scale_y = 1.2
-        row.operator("qas.move_selected_to_library", text=f"Move {selected_count} Assets", icon="EXPORT")
+        row.operator("qam.move_selected_to_library", text=f"Move {selected_count} Assets", icon="EXPORT")
         
         layout.separator()
         
@@ -287,7 +287,7 @@ class QAS_PT_bulk_operations(bpy.types.Panel):
         
         row = box.row()
         row.scale_y = 1.2
-        row.operator("qas.bundle_assets", text=f"Bundle {selected_count} Assets", icon="PACKAGE")
+        row.operator("qam.bundle_assets", text=f"Bundle {selected_count} Assets", icon="PACKAGE")
 
 
 def _get_asset_source_path(context):
@@ -348,7 +348,7 @@ def _get_asset_source_path(context):
     return None
 
 
-class QAS_PT_asset_actions(bpy.types.Panel):
+class QAM_PT_asset_actions(bpy.types.Panel):
     """Panel for asset actions - Apply Changes and Remove Asset for external assets."""
     
     bl_space_type = 'FILE_BROWSER'
@@ -384,8 +384,8 @@ class QAS_PT_asset_actions(bpy.types.Panel):
         layout = self.layout
         
         wm = context.window_manager
-        meta = getattr(wm, "qas_metadata_edit", None)
-        manage = getattr(wm, "qas_manage_props", None)
+        meta = getattr(wm, "qam_metadata_edit", None)
+        manage = getattr(wm, "qam_manage_props", None)
         
         # Check if asset changed (auto-exit edit mode)
         _check_and_exit_edit_mode(context)
@@ -395,17 +395,17 @@ class QAS_PT_asset_actions(bpy.types.Panel):
         row.scale_y = 1.3
         if _edit_mode_active:
             # In edit mode - show "Cancel" button
-            row.operator("qas.toggle_edit_mode", text="Cancel", icon="PANEL_CLOSE", depress=True)
+            row.operator("qam.toggle_edit_mode", text="Cancel", icon="PANEL_CLOSE", depress=True)
             
             # Show "Apply Changes" button below
             row = layout.row()
             row.scale_y = 1.3
             has_changes = meta.has_changes() if meta else False
             row.enabled = has_changes
-            row.operator("qas.apply_metadata_changes", text="Apply Changes", icon="CHECKMARK")
+            row.operator("qam.apply_metadata_changes", text="Apply Changes", icon="CHECKMARK")
         else:
             # Not in edit mode - show "Edit Metadata/Tags" button
-            row.operator("qas.toggle_edit_mode", text="Edit Metadata/Tags", icon="GREASEPENCIL")
+            row.operator("qam.toggle_edit_mode", text="Edit Metadata/Tags", icon="GREASEPENCIL")
         
         # Move section
         layout.separator()
@@ -417,16 +417,16 @@ class QAS_PT_asset_actions(bpy.types.Panel):
         
         move_row = box.row()
         move_row.scale_y = 1.2
-        move_row.operator("qas.move_selected_to_library", text="Move", icon="EXPORT")
+        move_row.operator("qam.move_selected_to_library", text="Move", icon="EXPORT")
         
         # Remove Asset button
         layout.separator()
         row = layout.row()
         row.scale_y = 1.2
-        row.operator("qas.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
+        row.operator("qam.delete_selected_assets", text="Remove Asset from Library", icon="TRASH")
 
 
-class QAS_PT_save_to_library(bpy.types.Panel):
+class QAM_PT_save_to_library(bpy.types.Panel):
     """Panel for saving local assets to a library - appears after Tags."""
     
     bl_space_type = 'FILE_BROWSER'
@@ -459,7 +459,7 @@ class QAS_PT_save_to_library(bpy.types.Panel):
     def draw(self, context):
         layout = self.layout
         wm = context.window_manager
-        props = getattr(wm, "qas_save_props", None)
+        props = getattr(wm, "qam_save_props", None)
         
         if not props:
             layout.label(text="Properties unavailable")
@@ -492,7 +492,7 @@ class QAS_PT_save_to_library(bpy.types.Panel):
         # Copy to Asset Library button
         row = layout.row()
         row.scale_y = 1.2
-        row.operator("qas.save_asset_to_library_direct", text="Copy to Asset Library", icon="EXPORT")
+        row.operator("qam.save_asset_to_library_direct", text="Copy to Asset Library", icon="EXPORT")
 
 
 # ============================================================================
@@ -514,7 +514,7 @@ def _draw_metadata_override(self, context):
     if is_local:
         # For local assets, draw our editable fields for saving
         wm = context.window_manager
-        props = getattr(wm, "qas_save_props", None)
+        props = getattr(wm, "qam_save_props", None)
         
         if not props:
             layout.label(text="Properties unavailable")
@@ -556,7 +556,7 @@ def _draw_metadata_override(self, context):
     else:
         # For external assets, draw our editable fields
         wm = context.window_manager
-        meta = getattr(wm, "qas_metadata_edit", None)
+        meta = getattr(wm, "qam_metadata_edit", None)
         
         if not meta:
             layout.label(text="Metadata editing unavailable")
@@ -625,7 +625,7 @@ def _draw_tags_override(self, context):
     else:
         # For external assets, show our custom editable tag list
         wm = context.window_manager
-        meta = getattr(wm, "qas_metadata_edit", None)
+        meta = getattr(wm, "qam_metadata_edit", None)
         
         if not meta:
             layout.label(text="Tags unavailable")
@@ -641,14 +641,14 @@ def _draw_tags_override(self, context):
         
         row = layout.row()
         row.template_list(
-            "QAS_UL_metadata_tags", "",
+            "QAM_UL_metadata_tags", "",
             meta, "edit_tags",
             meta, "active_tag_index",
             rows=3,
         )
         col = row.column(align=True)
-        col.operator("qas.tag_add", icon='ADD', text="")
-        col.operator("qas.tag_remove", icon='REMOVE', text="")
+        col.operator("qam.tag_add", icon='ADD', text="")
+        col.operator("qam.tag_remove", icon='REMOVE', text="")
         
         # Small gap before filtering options
         layout.separator(factor=0.3)
@@ -682,9 +682,9 @@ def _enter_edit_mode(context):
         if not _original_metadata_draw:
             _original_metadata_draw = ASSETBROWSER_PT_metadata.draw
         ASSETBROWSER_PT_metadata.draw = _draw_metadata_override
-        debug_print("[QAS] Entered edit mode - overrode metadata panel draw")
+        debug_print("[QAM] Entered edit mode - overrode metadata panel draw")
     except Exception as e:
-        debug_print(f"[QAS] Could not override metadata panel draw: {e}")
+        debug_print(f"[QAM] Could not override metadata panel draw: {e}")
     
     # Override native tags panel draw
     try:
@@ -692,9 +692,9 @@ def _enter_edit_mode(context):
         if not _original_tags_draw:
             _original_tags_draw = ASSETBROWSER_PT_metadata_tags.draw
         ASSETBROWSER_PT_metadata_tags.draw = _draw_tags_override
-        debug_print("[QAS] Entered edit mode - overrode tags panel draw")
+        debug_print("[QAM] Entered edit mode - overrode tags panel draw")
     except Exception as e:
-        debug_print(f"[QAS] Could not override tags panel draw: {e}")
+        debug_print(f"[QAM] Could not override tags panel draw: {e}")
     
     _edit_mode_active = True
     
@@ -716,9 +716,9 @@ def _exit_edit_mode():
         try:
             from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata
             ASSETBROWSER_PT_metadata.draw = _original_metadata_draw
-            debug_print("[QAS] Exited edit mode - restored metadata panel draw")
+            debug_print("[QAM] Exited edit mode - restored metadata panel draw")
         except Exception as e:
-            debug_print(f"[QAS] Could not restore metadata panel draw: {e}")
+            debug_print(f"[QAM] Could not restore metadata panel draw: {e}")
         _original_metadata_draw = None
     
     # Restore native tags panel draw
@@ -726,9 +726,9 @@ def _exit_edit_mode():
         try:
             from bl_ui.space_filebrowser import ASSETBROWSER_PT_metadata_tags
             ASSETBROWSER_PT_metadata_tags.draw = _original_tags_draw
-            debug_print("[QAS] Exited edit mode - restored tags panel draw")
+            debug_print("[QAM] Exited edit mode - restored tags panel draw")
         except Exception as e:
-            debug_print(f"[QAS] Could not restore tags panel draw: {e}")
+            debug_print(f"[QAM] Could not restore tags panel draw: {e}")
         _original_tags_draw = None
     
     _edit_mode_active = False
@@ -768,14 +768,14 @@ def _check_and_exit_edit_mode(context):
 
 
 classes = (
-    QAS_PT_save_hint,
-    QAS_PT_bulk_operations,
-    QAS_UL_metadata_tags,
-    QAS_OT_tag_add,
-    QAS_OT_tag_remove,
-    QAS_MT_asset_context_menu,
-    QAS_PT_asset_actions,
-    QAS_PT_save_to_library,
+    QAM_PT_save_hint,
+    QAM_PT_bulk_operations,
+    QAM_UL_metadata_tags,
+    QAM_OT_tag_add,
+    QAM_OT_tag_remove,
+    QAM_MT_asset_context_menu,
+    QAM_PT_asset_actions,
+    QAM_PT_save_to_library,
 )
 
 
@@ -784,7 +784,7 @@ def register():
         bpy.utils.register_class(cls)
     
     bpy.types.ASSETBROWSER_MT_context_menu.append(draw_asset_context_menu)
-    debug_print("[QAS] Registered Quick Asset Saver panels")
+    debug_print("[QAM] Registered Quick Asset Saver panels")
 
 
 def unregister():
@@ -796,4 +796,4 @@ def unregister():
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     
-    debug_print("[QAS] Unregistered Quick Asset Saver panels")
+    debug_print("[QAM] Unregistered Quick Asset Saver panels")

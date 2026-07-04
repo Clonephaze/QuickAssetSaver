@@ -7,14 +7,15 @@ from pathlib import Path
 
 import bpy
 
-DEBUG_MODE = False
+from ..constants import (
+    MIN_BLEND_FILE_SIZE,  # noqa: F401 (re-exported for file_io.py, bundle.py)
+    MAX_INCREMENTAL_FILES,
+    LARGE_SELECTION_WARNING_THRESHOLD,  # noqa: F401 (re-exported for bundle.py)
+    VERY_LARGE_BUNDLE_WARNING_MB,  # noqa: F401 (re-exported for bundle.py)
+    DEFAULT_MAX_BUNDLE_SIZE_MB,  # noqa: F401 (re-exported for bundle.py)
+)
 
-MIN_BLEND_FILE_SIZE = 100
-MAX_INCREMENTAL_FILES = 9999
-
-LARGE_SELECTION_WARNING_THRESHOLD = 25
-VERY_LARGE_BUNDLE_WARNING_MB = 5000
-DEFAULT_MAX_BUNDLE_SIZE_MB = 4096
+DEBUG_MODE = bpy.app.debug
 
 # Complete list of all Blender datablock collection names that can contain user data.
 # Used when loading/writing .blend files to preserve ALL data in the file.
@@ -111,7 +112,7 @@ def refresh_asset_browser_deferred():
                         area.tag_redraw()
     except Exception as e:
         if DEBUG_MODE:
-            print(f"[QAS] Deferred refresh failed: {e}")
+            print(f"[QAM] Deferred refresh failed: {e}")
     return None
 
 

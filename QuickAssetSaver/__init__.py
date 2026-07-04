@@ -1,15 +1,6 @@
-if "bpy" in locals():
-    import importlib
-    if "operators" in locals():
-        importlib.reload(operators)  # noqa: F821
-    if "properties" in locals():
-        importlib.reload(properties)  # noqa: F821
-    if "panels" in locals():
-        importlib.reload(panels)  # noqa: F821
-else:
-    from . import operators, panels, properties
+from . import operators, panels, properties
 
-import bpy  # noqa: F401
+# import bpy Temp comment out, testing if needed  # noqa: F401
 
 
 def register():

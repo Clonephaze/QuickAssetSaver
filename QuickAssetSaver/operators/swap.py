@@ -1,4 +1,4 @@
-"""
+﻿"""
 Swap/replace operator for Quick Asset Saver.
 """
 
@@ -9,10 +9,10 @@ from bpy.types import Operator
 from .file_io import collect_selected_asset_files
 
 
-class QAS_OT_swap_selected_with_asset(Operator):
+class QAM_OT_swap_selected_with_asset(Operator):
     """Swap selected scene objects with the selected asset from the library."""
 
-    bl_idname = "qas.swap_selected_with_asset"
+    bl_idname = "qam.swap_selected_with_asset"
     bl_label = "Replace with Asset"
     bl_description = "Replace selected objects in the scene with the selected asset (respects Asset Browser import settings)"
     bl_options = {"REGISTER", "UNDO"}
@@ -58,8 +58,10 @@ class QAS_OT_swap_selected_with_asset(Operator):
         instance_collections = False
         
         import_method = getattr(space.params, 'import_method', 'FOLLOW_PREFS')
-        
-        if import_method == 'FOLLOW_PREFS':
+
+        # 'FOLLOW_PREFS' was renamed to 'FOLLOW_ASSET' in Blender 5.2 (commit e428159ecc).
+        # Handle both values so the operator works across versions.
+        if import_method in ('FOLLOW_PREFS', 'FOLLOW_ASSET'):
             prefs = context.preferences.filepaths
             import_method = getattr(prefs, 'asset_import_method', 'APPEND')
         
@@ -211,5 +213,5 @@ class QAS_OT_swap_selected_with_asset(Operator):
 
 
 classes = (
-    QAS_OT_swap_selected_with_asset,
+    QAM_OT_swap_selected_with_asset,
 )

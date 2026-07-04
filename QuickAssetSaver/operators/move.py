@@ -1,20 +1,29 @@
-"""
+﻿"""
 Move operator for Quick Asset Saver.
 Handles moving assets between libraries with full companion file support.
 """
 
 import shutil
+import time
 from pathlib import Path
 
 import bpy
 from bpy.types import Operator
 
 try:
-    from send2trash import send2trash
+    from send2trash import send2trash as _send2trash
+
+    def move_to_trash(path) -> None:
+        _send2trash(str(path))
+
 except ImportError:
-    def send2trash(path):
-        import os
-        os.remove(path)
+    def move_to_trash(path) -> None:
+        from pathlib import Path
+        p = Path(path)
+        raise RuntimeError(
+            f"Send2Trash is unavailable. '{p.name}' was NOT deleted.\n"
+            f"You can delete it manually at: {p.parent}"
+        )
 
 from .utils import (
     debug_print,
@@ -23,6 +32,11 @@ from .utils import (
     refresh_asset_browser,
     ALL_DATABLOCK_COLLECTIONS,
     ASSET_DATABLOCK_COLLECTIONS,
+)
+from ..constants import (
+    COMPANION_FOLDER_GROUPS,
+    THUMBNAIL_EXTENSIONS,
+    METADATA_EXTENSIONS,
 )
 from .catalog import get_catalog_path_from_uuid
 from .file_io import (
@@ -73,41 +87,26 @@ def _should_cleanup_empty_folder(folder_path):
         return False
 
 
-def get_addon_preferences():
-    """Get the addon preferences object."""
-    addon = bpy.context.preferences.addons.get(__package__.rsplit('.', 1)[0], None)
-    if addon:
-        return addon.preferences
-    return None
+def _resolve_move_conflict(dest, conflict_resolution):
+    """Resolve a destination path against an existing-file conflict.
+
+    Returns (final_dest, skip). If skip is True, the caller should skip
+    this item entirely (user chose to skip files that already exist).
+    """
+    if not dest.exists():
+        return dest, False
+    if conflict_resolution == "OVERWRITE":
+        return dest, False
+    if conflict_resolution == "CANCEL":  # "Skip" in the UI
+        return dest, True
+    # INCREMENT (default)
+    return increment_filename(dest.parent, dest.stem, dest.suffix), False
 
 
-# Common asset companion folder groups (case variations)
-COMPANION_FOLDER_GROUPS = [
-    ['textures', 'Textures', 'TEXTURES'],
-    ['maps', 'Maps', 'MAPS'],
-    ['materials', 'Materials', 'MATERIALS'],
-    ['shaders', 'Shaders', 'SHADERS'],
-    ['images', 'Images', 'IMAGES'],
-    ['hdri', 'HDRI', 'hdris', 'HDRIs'],
-    ['references', 'References', 'ref', 'Ref'],
-    ['documentation', 'Documentation', 'docs', 'Docs'],
-    ['resources', 'Resources', 'RESOURCES'],
-]
-
-# Flat list of all companion folder names for quick checking
-COMPANION_FOLDER_NAMES = [name for group in COMPANION_FOLDER_GROUPS for name in group]
-
-# Thumbnail file extensions
-THUMBNAIL_EXTENSIONS = ['.png', '.webp', '.jpg', '.jpeg']
-
-# Metadata file extensions
-METADATA_EXTENSIONS = ['.json', '.txt', '.md', '.xml']
-
-
-class QAS_OT_move_selected_to_library(Operator):
+class QAM_OT_move_selected_to_library(Operator):
     """Move selected assets to another library - handles multi-asset files correctly."""
 
-    bl_idname = "qas.move_selected_to_library"
+    bl_idname = "qam.move_selected_to_library"
     bl_label = "Move Assets"
     bl_description = "Move selected assets to the target library (extracts from multi-asset files)"
     bl_options = {"REGISTER"}
@@ -121,19 +120,31 @@ class QAS_OT_move_selected_to_library(Operator):
         )
 
     def execute(self, context):
-        from ..properties import get_library_by_identifier
+        from ..compatibility import is_protected_library, is_online_library
+        if is_protected_library(context):
+            self.report({"ERROR"}, "The Essentials library is protected and cannot be modified")
+            return {"CANCELLED"}
+        if is_online_library(context):
+            self.report({"ERROR"}, "Online libraries cannot be modified")
+            return {"CANCELLED"}
+        from ..properties import get_library_by_identifier, get_addon_preferences
 
-        prefs = get_addon_preferences()
+        prefs = get_addon_preferences(context)
         wm = context.window_manager
-        manage = getattr(wm, "qas_manage_props", None)
+        manage = getattr(wm, "qam_manage_props", None)
         if not manage:
             self.report({"ERROR"}, "Internal properties missing")
             return {"CANCELLED"}
 
-        selected_assets, active_library = collect_selected_assets_with_names(context)
-        if not selected_assets:
-            self.report({"WARNING"}, "No assets selected")
-            return {"CANCELLED"}
+        # Detect if we're operating from the Current File library
+        params = getattr(context.space_data, "params", None)
+        asset_lib_ref = None
+        if params:
+            asset_lib_ref = (
+                getattr(params, "asset_library_reference", None)
+                or getattr(params, "asset_library_ref", None)
+            )
+        is_current_file = asset_lib_ref in ("LOCAL", "CURRENT")
 
         if not manage.move_target_library or manage.move_target_library == "NONE":
             self.report({"ERROR"}, "Please choose a target library")
@@ -152,8 +163,17 @@ class QAS_OT_move_selected_to_library(Operator):
                 self.report({"ERROR"}, f"Cannot access target library: {e}")
                 return {"CANCELLED"}
 
+        # Current File: skip file-path collection and save each local datablock directly
+        if is_current_file:
+            return self._save_local_assets_to_library(context, manage, target_root, prefs)
+
+        # External library: resolve selected assets to .blend paths on disk
+        selected_assets, active_library = collect_selected_assets_with_names(context)
+        if not selected_assets:
+            self.report({"WARNING"}, "No assets selected")
+            return {"CANCELLED"}
+
         target_catalog_uuid = manage.move_target_catalog if manage.move_target_catalog else "UNASSIGNED"
-        
         debug_print(f"[Move Debug] Target catalog UUID: {target_catalog_uuid}")
         
         dest_base = target_root
@@ -218,8 +238,10 @@ class QAS_OT_move_selected_to_library(Operator):
                             debug_print("[Move Debug] Failed to update catalog")
                         continue
                     
-                    if dest.exists():
-                        dest = increment_filename(dest.parent, dest.stem, dest.suffix)
+                    dest, skip = _resolve_move_conflict(dest, manage.move_conflict_resolution)
+                    if skip:
+                        skipped += 1
+                        continue
                     
                     success = self._move_file_with_companions(
                         src_path, dest, selected_names, catalog_to_set
@@ -235,8 +257,10 @@ class QAS_OT_move_selected_to_library(Operator):
                             dest_filename = f"{sanitize_name(asset_name)}.blend"
                             dest = dest_base / dest_filename
                             
-                            if dest.exists():
-                                dest = increment_filename(dest.parent, sanitize_name(asset_name), ".blend")
+                            dest, skip = _resolve_move_conflict(dest, manage.move_conflict_resolution)
+                            if skip:
+                                skipped += 1
+                                continue
                             
                             success = self._extract_asset_to_file(
                                 src_path, asset_name, dest, catalog_to_set
@@ -266,6 +290,95 @@ class QAS_OT_move_selected_to_library(Operator):
             msg_parts.append(f"skipped {skipped}")
         
         self.report({"INFO"}, ", ".join(msg_parts) if msg_parts else "No changes made")
+        if moved or extracted:
+            manage.show_success_message = True
+            manage.success_message_time = time.time()
+        return {"FINISHED"}
+
+    def _save_local_assets_to_library(self, context, manage, target_root, prefs):
+        """Save Current File assets to a target library (bulk save, source unchanged).
+
+        For Current File assets, 'move' means 'copy to library'. The source
+        datablock stays in the current file — we cannot safely delete it
+        without modifying the user's unsaved work.
+        """
+        from .utils import sanitize_name, refresh_asset_browser
+        from .file_io import write_blend_file
+        from .catalog import get_catalog_path_from_uuid
+
+        target_catalog_uuid = manage.move_target_catalog if manage.move_target_catalog else "UNASSIGNED"
+
+        # Build destination base (respects catalog subfolders preference)
+        dest_base = target_root
+        if prefs and prefs.use_catalog_subfolders and target_catalog_uuid != "UNASSIGNED":
+            catalog_path = get_catalog_path_from_uuid(str(target_root), target_catalog_uuid)
+            if catalog_path:
+                for part in [p for p in catalog_path.split("/") if p]:
+                    dest_base = dest_base / sanitize_name(part, max_length=64)
+
+        try:
+            dest_base.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self.report({"ERROR"}, f"Could not create destination folders: {e}")
+            return {"CANCELLED"}
+
+        # Collect local datablocks
+        asset_files = None
+        if hasattr(context, "selected_asset_files") and context.selected_asset_files is not None:
+            asset_files = context.selected_asset_files
+        elif hasattr(context, "selected_assets") and context.selected_assets is not None:
+            asset_files = context.selected_assets
+
+        if not asset_files:
+            self.report({"WARNING"}, "No assets selected")
+            return {"CANCELLED"}
+
+        saved = 0
+        skipped = 0
+
+        for af in asset_files:
+            local_id = getattr(af, "local_id", None)
+            if local_id is None:
+                skipped += 1
+                continue
+
+            if not hasattr(local_id, "asset_data") or local_id.asset_data is None:
+                skipped += 1
+                continue
+
+            # Build destination path
+            filename = sanitize_name(local_id.name)
+            dest_path = dest_base / f"{filename}.blend"
+            dest_path, skip = _resolve_move_conflict(dest_path, manage.move_conflict_resolution)
+            if skip:
+                skipped += 1
+                continue
+
+            # Temporarily apply target catalog to the datablock, write, then restore
+            original_catalog_id = local_id.asset_data.catalog_id
+            try:
+                if target_catalog_uuid != "UNASSIGNED":
+                    local_id.asset_data.catalog_id = target_catalog_uuid
+
+                success = write_blend_file(dest_path, {local_id})
+            finally:
+                # Always restore the original catalog — do not modify the current file
+                local_id.asset_data.catalog_id = original_catalog_id
+
+            if success:
+                saved += 1
+            else:
+                skipped += 1
+
+        refresh_asset_browser(context)
+
+        if saved:
+            self.report({"INFO"}, f"Saved {saved} asset(s) to library" + (f" ({skipped} skipped)" if skipped else ""))
+            manage.show_success_message = True
+            manage.success_message_time = time.time()
+        else:
+            self.report({"WARNING"}, "No assets were saved")
+
         return {"FINISHED"}
 
     # -------------------------------------------------------------------------
@@ -380,7 +493,7 @@ class QAS_OT_move_selected_to_library(Operator):
                 # Check if source folder is now empty and clean it up
                 if _should_cleanup_empty_folder(source_parent):
                     try:
-                        send2trash(str(source_parent))
+                        move_to_trash(str(source_parent))
                         debug_print(f"Cleaned up empty source folder: {source_parent}")
                     except Exception as e:
                         debug_print(f"Could not cleanup empty folder {source_parent}: {e}")
@@ -540,7 +653,7 @@ class QAS_OT_move_selected_to_library(Operator):
         
         for item in items_to_trash:
             try:
-                send2trash(str(item))
+                move_to_trash(str(item))
                 debug_print(f"Sent to recycle bin: {item}")
             except Exception as e:
                 print(f"Warning: Could not trash {item}: {e}")
@@ -582,7 +695,7 @@ class QAS_OT_move_selected_to_library(Operator):
                 collection = getattr(bpy.data, target_collection)
                 if asset_name in collection:
                     existing_db = collection[asset_name]
-                    temp_name = f"__QAS_EXTRACT_TEMP_{asset_name}_{id(existing_db)}"
+                    temp_name = f"__QAM_EXTRACT_TEMP_{asset_name}_{id(existing_db)}"
                     original_name = existing_db.name
                     existing_db.name = temp_name
                     renamed_existing.append((existing_db, original_name))
@@ -652,7 +765,7 @@ class QAS_OT_move_selected_to_library(Operator):
                     for name in names:
                         if name in collection:
                             existing_db = collection[name]
-                            temp_name = f"__QAS_MOVE_TEMP_{name}_{id(existing_db)}"
+                            temp_name = f"__QAM_MOVE_TEMP_{name}_{id(existing_db)}"
                             original_name = existing_db.name
                             existing_db.name = temp_name
                             renamed_existing.append((existing_db, original_name))
@@ -738,7 +851,7 @@ class QAS_OT_move_selected_to_library(Operator):
                     for name in names:
                         if name in collection:
                             existing_db = collection[name]
-                            temp_name = f"__QAS_CAT_TEMP_{name}_{id(existing_db)}"
+                            temp_name = f"__QAM_CAT_TEMP_{name}_{id(existing_db)}"
                             original_name = existing_db.name
                             existing_db.name = temp_name
                             renamed_existing.append((existing_db, original_name))
@@ -843,5 +956,5 @@ class QAS_OT_move_selected_to_library(Operator):
 
 
 classes = (
-    QAS_OT_move_selected_to_library,
+    QAM_OT_move_selected_to_library,
 )

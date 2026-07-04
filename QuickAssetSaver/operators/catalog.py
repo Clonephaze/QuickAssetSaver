@@ -5,6 +5,8 @@ Catalog parsing and management functions for Quick Asset Saver.
 import uuid
 from pathlib import Path
 
+import bpy
+
 from .utils import debug_print
 
 _CATALOG_ENUM_CACHE = []
@@ -94,7 +96,7 @@ def get_catalogs_from_cdf(library_path):
                     # This supports Chinese, Japanese, Korean and other non-ASCII catalog names
                     display_name = str(catalog_path)
                     
-                    debug_print(f"[QAS Catalog Debug] Adding catalog {idx}: uuid={catalog_uuid}, name={display_name}")
+                    debug_print(f"[QAM Catalog Debug] Adding catalog {idx}: uuid={catalog_uuid}, name={display_name}")
                     
                     enum_items.append(
                         (
@@ -120,7 +122,7 @@ def get_catalogs_from_cdf(library_path):
         print(f"Encoding error reading catalog file {cdf_path}: {e}")
 
     _CATALOG_ENUM_CACHE = enum_items
-    debug_print(f"[QAS Catalog Debug] Cached {len(_CATALOG_ENUM_CACHE)} catalog items")
+    debug_print(f"[QAM Catalog Debug] Cached {len(_CATALOG_ENUM_CACHE)} catalog items")
     
     return catalogs, _CATALOG_ENUM_CACHE
 
@@ -161,3 +163,72 @@ def clear_catalog_cache():
     """Clear the catalog enum cache to force re-reading from disk."""
     global _CATALOG_ENUM_CACHE
     _CATALOG_ENUM_CACHE = []
+
+
+def create_catalog_entry(library_path: str, catalog_path: str) -> str:
+    """
+    Add a new catalog entry to the library's CDF if the path doesn't exist.
+    Preserves ALL existing CDF content. Safe to call if the entry already exists
+    (returns the existing UUID in that case).
+
+    Args:
+        library_path: Path to the asset library folder containing blender_assets.cats.txt
+        catalog_path: Catalog path string (e.g., "Materials/Metal")
+
+    Returns:
+        str: UUID for this catalog path (existing UUID if already present, new UUID if created)
+    """
+    import uuid as _uuid_mod
+
+    lib_path = Path(library_path)
+    cdf_path = lib_path / "blender_assets.cats.txt"
+
+    # Check if it already exists — reuse existing UUID
+    existing_catalogs, _ = get_catalogs_from_cdf(library_path)
+    if catalog_path in existing_catalogs:
+        return existing_catalogs[catalog_path]
+
+    new_uuid = str(_uuid_mod.uuid4())
+    display_name = catalog_path.split("/")[-1] if "/" in catalog_path else catalog_path
+
+    # Create the CDF with a VERSION header if it doesn't exist yet
+    if not cdf_path.exists():
+        try:
+            cdf_path.write_text("VERSION 1\n\n", encoding="utf-8")
+        except (OSError, IOError) as e:
+            print(f"[QAM] Could not create catalog file at {cdf_path}: {e}")
+            return new_uuid
+
+    # Append the new entry, preserving all existing content
+    try:
+        with open(cdf_path, "a", encoding="utf-8") as f:
+            f.write(f"{new_uuid}:{catalog_path}:{display_name}\n")
+    except (OSError, IOError) as e:
+        print(f"[QAM] Could not write catalog entry to {cdf_path}: {e}")
+        return new_uuid
+
+    # Invalidate the enum cache so the next rebuild picks up the new entry
+    clear_catalog_cache()
+
+    if bpy.app.debug:
+        print(f"[QAM] Created catalog entry: {catalog_path} ({new_uuid})")
+
+    return new_uuid
+
+
+class QAM_OT_refresh_catalog_list(bpy.types.Operator):
+    """Refresh the catalog dropdown by re-reading the library's catalog file"""
+
+    bl_idname = "qam.refresh_catalog_list"
+    bl_label = ""
+    bl_description = "Re-read the catalog file from disk to pick up any changes made outside this addon"
+    bl_options = {"INTERNAL"}
+
+    def execute(self, context):
+        clear_catalog_cache()
+        if context.area:
+            context.area.tag_redraw()
+        return {"FINISHED"}
+
+
+classes = (QAM_OT_refresh_catalog_list,)
